@@ -1,6 +1,10 @@
 import type { ModelCapability, ModelParams } from '../storage/types';
 
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string; }
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  position?: 'pre' | 'system' | 'before-history' | 'history' | 'after-history' | 'post';
+}
 export interface ProviderConfig {
   id: string; baseUrl: string; apiKey: string; extraHeaders: Record<string, string>;
 }

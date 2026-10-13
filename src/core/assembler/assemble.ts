@@ -37,6 +37,7 @@ export function assemble(input: AssembleInput): AssembledRequest {
   push('card-system', 'system', applyMacros(card.description, input.macros), 'system', 40);
   push('card-system', 'system', applyMacros(card.persona, input.macros), 'system', 41);
   push('card-system', 'system', applyMacros(card.scenario, input.macros), 'system', 42);
+  push('chat-setup', 'system', input.setup ?? '', 'system', 45);
 
   const wb = scanWorldbook(
     input.worldbook,

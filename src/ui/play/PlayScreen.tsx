@@ -6,6 +6,7 @@ import Composer from './Composer';
 export default function PlayScreen() {
   const ready = useSession((s) => s.ready);
   const cardName = useSession((s) => s.cardName);
+  const modelLabel = useSession((s) => s.modelLabel);
   const messages = useSession((s) => s.messages);
   const draft = useSession((s) => s.draft);
   const streaming = useSession((s) => s.streaming);
@@ -28,7 +29,7 @@ export default function PlayScreen() {
     <div className="flex h-full flex-col bg-[#f2f2f7]">
       <header className="sticky top-0 z-10 border-b border-black/5 bg-white/90 px-3 pb-2 pt-3 backdrop-blur">
         <div className="truncate text-[15px] font-semibold text-slate-800">{cardName || '加载中…'}</div>
-        <div className="text-[11px] text-slate-400">本地演示卡 · mock 模型</div>
+        <div className="text-[11px] text-slate-400">{modelLabel}</div>
       </header>
 
       <main className="flex-1 overflow-y-auto py-2">

@@ -6,6 +6,8 @@ import { assemble } from '../core/assembler/assemble';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import type { ProviderAdapter } from '../core/providers/types';
 import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
+import { getActive } from '../core/storage/providerRepo';
+import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
 
 const MOCK_CFG = { id: 'mock', baseUrl: '', apiKey: '', extraHeaders: {} };
@@ -20,6 +22,7 @@ export interface SessionState {
   cardId: string | null;
   cardName: string;
   card: CardPackage | null;
+  modelLabel: string;
   chatId: string | null;
   messages: MessageRecord[];
   draft: string;
@@ -28,6 +31,7 @@ export interface SessionState {
   init: () => Promise<void>;
   openCard: (cardId: string) => Promise<void>;
   reloadCard: () => Promise<void>;
+  startFromUi: (cardId: string, prompt: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   branchTo: (messageId: string) => Promise<void>;
   regenerate: () => Promise<void>;
@@ -65,6 +69,7 @@ export const useSession = create<SessionState>((set, get) => ({
   cardId: null,
   cardName: '',
   card: null,
+  modelLabel: 'mock 模拟模型',
   chatId: null,
   messages: [],
   draft: '',
@@ -105,10 +110,12 @@ export const useSession = create<SessionState>((set, get) => ({
         chat.currentLeafId = first.id;
       }
     }
+    const activePreset = await getActive();
     set({
       ready: true,
       cardId,
       card,
+      modelLabel: activePreset ? activePreset.provider.label + ' · ' + activePreset.preset.model : 'mock 模拟模型',
       cardName: card.json.name,
       chatId: chat.id,
       messages: await pathToLeaf(chat.id, chat.currentLeafId),
@@ -125,12 +132,29 @@ export const useSession = create<SessionState>((set, get) => ({
     if (card) set({ card, cardName: card.json.name });
   },
 
+  startFromUi: async (cardId: string, prompt: string) => {
+    const card = await loadCardPackage(cardId);
+    if (!card) return;
+    const chatId = newId('chat_');
+    await db.chats.add({
+      id: chatId, cardId, title: card.json.name, vars: {}, promptSnapshot: prompt,
+      providerId: null, modelPresetId: null, currentLeafId: null,
+      createdAt: Date.now(), updatedAt: Date.now(), archived: 0,
+    });
+    set({
+      ready: true, cardId, card, cardName: card.json.name, chatId,
+      messages: [], draft: '', streaming: false, error: null,
+    });
+    await get().send(prompt);
+  },
+
   send: async (text: string) => {
     const { chatId, card } = get();
     const clean = text.trim();
     if (!chatId || !clean || get().streaming || !card) return;
     const chat = await db.chats.get(chatId);
     const parentId = chat?.currentLeafId ?? null;
+    const setupPrompt = chat?.promptSnapshot ?? '';
 
     const userMsg: MessageRecord = {
       id: newId('m_'), chatId, parentId, role: 'user', raw: clean,
@@ -161,25 +185,38 @@ export const useSession = create<SessionState>((set, get) => ({
       memories: [],
       history: path.slice(0, -1).map((m) => ({ id: m.id, role: m.role, content: m.raw })),
       userInput: clean,
+      setup: setupPrompt,
       macros: macroContext(card.json.name, card.json.persona.intro),
       limits: {
-        contextLength: DEFAULT_PARAMS.contextLength,
-        maxTokens: DEFAULT_PARAMS.maxTokens,
+        contextLength: (await getActive())?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
+        maxTokens: (await getActive())?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
         reserve: 512,
         worldbookTokenBudget: 2000,
       },
     });
 
-    const active = adapter ?? createMockAdapter(mockReplyFor(clean, card.json.name), { delayMs: 0 });
+    const preset = await getActive();
+    const streamer = preset ? adapterFor(preset.provider.protocol) : adapter ?? createMockAdapter(mockReplyFor(clean, card.json.name), { delayMs: 0 });
+    const cfg = preset
+      ? {
+          id: preset.provider.id,
+          baseUrl: preset.provider.baseUrl,
+          apiKey: preset.provider.apiKey,
+          extraHeaders: preset.provider.extraHeaders,
+        }
+      : MOCK_CFG;
+    const modelName = preset ? preset.preset.model : 'mock';
+    const params = preset ? preset.preset.params : DEFAULT_PARAMS;
+    const capabilities = preset ? preset.preset.capabilities : DEFAULT_CAPABILITY;
     let acc = '';
     let failure: string | null = null;
 
     try {
-      for await (const ev of active.streamChat(MOCK_CFG, {
-        model: 'mock',
-        messages: assembled.entries.map((e) => ({ role: e.role, content: e.content })),
-        params: DEFAULT_PARAMS,
-        capabilities: DEFAULT_CAPABILITY,
+      for await (const ev of streamer.streamChat(cfg, {
+        model: modelName,
+        messages: assembled.entries.map((e) => ({ role: e.role, content: e.content, position: e.position })),
+        params,
+        capabilities,
       })) {
         if (ev.type === 'text') {
           acc += ev.delta;
@@ -195,7 +232,7 @@ export const useSession = create<SessionState>((set, get) => ({
     const assistantMsg: MessageRecord = {
       id: newId('m_'), chatId, parentId: userMsg.id, role: 'assistant', raw: acc,
       status: failure ? 'error' : 'complete', tokensIn: 0, tokensOut: 0,
-      model: 'mock', createdAt: Date.now(),
+      model: modelName, createdAt: Date.now(),
     };
     await db.messages.add(assistantMsg);
     await db.chats.update(chatId, { currentLeafId: assistantMsg.id, updatedAt: Date.now() });

@@ -15,6 +15,7 @@ export default function CardListScreen() {
   const openCard = useSession((s) => s.openCard);
   const setTab = useNav((s) => s.setTab);
   const openEditor = useNav((s) => s.openEditor);
+  const openCardUi = useNav((s) => s.openCardUi);
   const showToast = useNav((s) => s.showToast);
 
   const refresh = useCallback(async () => {
@@ -65,6 +66,11 @@ export default function CardListScreen() {
   };
 
   const onPlay = async (cardId: string) => {
+    const pkg = await loadCardPackage(cardId);
+    if (pkg?.json.ui?.entry) {
+      openCardUi(cardId);
+      return;
+    }
     await openCard(cardId);
     setTab('play');
   };

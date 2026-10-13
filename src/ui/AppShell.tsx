@@ -1,5 +1,6 @@
 import PlayScreen from './play/PlayScreen';
 import CardListScreen from './cards/CardListScreen';
+import CardUiScreen from './cards/CardUiScreen';
 import CardEditorScreen from './cards/CardEditorScreen';
 import SettingsScreen from './settings/SettingsScreen';
 import { useNav } from '../state/useNav';
@@ -13,6 +14,7 @@ const TABS: { key: 'cards' | 'play' | 'settings'; label: string }[] = [
 export default function AppShell() {
   const tab = useNav((s) => s.tab);
   const editingCardId = useNav((s) => s.editingCardId);
+  const uiCardId = useNav((s) => s.uiCardId);
   const setTab = useNav((s) => s.setTab);
   const toast = useNav((s) => s.toast);
 
@@ -21,6 +23,8 @@ export default function AppShell() {
       <div className="min-h-0 flex-1">
         {editingCardId ? (
           <CardEditorScreen cardId={editingCardId} />
+        ) : uiCardId ? (
+          <CardUiScreen cardId={uiCardId} />
         ) : tab === 'cards' ? (
           <CardListScreen />
         ) : tab === 'settings' ? (
@@ -44,7 +48,7 @@ export default function AppShell() {
             onClick={() => setTab(t.key)}
             className={
               'flex-1 py-3 text-[12px] ' +
-              (tab === t.key && !editingCardId ? 'font-semibold text-[#0072E3]' : 'text-slate-400')
+              (tab === t.key && !editingCardId && !uiCardId ? 'font-semibold text-[#0072E3]' : 'text-slate-400')
             }
           >
             {t.label}

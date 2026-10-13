@@ -2,7 +2,7 @@ export type EntryPosition = 'pre' | 'system' | 'before-history' | 'history' | 'a
 export type EntrySource =
   | 'card-pre' | 'card-system' | 'card-post'
   | 'config-prompt' | 'config-pre' | 'config-post'
-  | 'worldbook' | 'memory' | 'history' | 'user';
+  | 'worldbook' | 'memory' | 'history' | 'user' | 'chat-setup';
 
 export interface PromptEntry {
   id: string;
@@ -40,6 +40,7 @@ export interface AssembleInput {
   memories: MemoryItem[];
   history: HistoryMessage[];
   userInput: string;
+  setup?: string;
   macros: MacroContext;
   limits: Limits;
   worldbookMatch?: { caseSensitive?: boolean; wholeWord?: boolean };
