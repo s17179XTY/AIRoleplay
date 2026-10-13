@@ -15,7 +15,7 @@ const SECTIONS: { key: Section; label: string }[] = [
   { key: 'ui', label: '界面' },
 ];
 
-const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
+const inputClass = 'dsh-input w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-[#0072e3]';
 
 export default function CardEditorScreen({ cardId }: { cardId: string }) {
   const [base, setBase] = useState<CardPackage | null>(null);
@@ -59,11 +59,11 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="sticky top-0 z-10 border-b border-black/5 bg-white/90 px-3 pb-2 pt-3 backdrop-blur">
+      <header className="dsh-header sticky top-0 z-10 px-4 pb-2.5 pt-3.5">
         <div className="flex items-center justify-between">
-          <button type="button" onClick={closeEditor} className="text-[13px] text-slate-500">返回</button>
+          <button type="button" onClick={closeEditor} className="dsh-chip">返回</button>
           <div className="truncate px-2 text-[14px] font-semibold text-slate-800">{draft.json.name || '未命名卡片'}</div>
-          <button type="button" onClick={() => void onSave()} className="text-[13px] font-medium text-[#0072E3]">保存</button>
+          <button type="button" onClick={() => void onSave()} className="dsh-btn px-4 py-2 text-[12px]">保存</button>
         </div>
       </header>
 
@@ -74,8 +74,8 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
             type="button"
             onClick={() => setSection(s.key)}
             className={
-              'shrink-0 rounded-full px-3 py-1 text-[12px] ' +
-              (section === s.key ? 'bg-[#0072E3] text-white' : 'bg-black/5 text-slate-500')
+              'dsh-chip shrink-0 ' +
+              (section === s.key ? 'dsh-chip-active' : '')
             }
           >
             {s.label}
@@ -83,7 +83,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
         ))}
       </div>
 
-      <main className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
+      <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {section === 'basic' && (
           <>
             <Field label="卡片名">
@@ -137,7 +137,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
         {section === 'worldbook' && (
           <>
             {draft.worldbook.map((entry, i) => (
-              <div key={entry.id} className="rounded-2xl border border-black/10 bg-white p-3">
+              <div key={entry.id} className="dsh-card p-3.5">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[12px] font-medium text-slate-600">条目 {i + 1}</span>
                   <button type="button" className="text-[12px] text-red-500"
@@ -198,7 +198,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
                 </div>
               </div>
             ))}
-            <button type="button" className="w-full rounded-2xl border border-dashed border-black/20 py-2.5 text-[13px] text-slate-500"
+            <button type="button" className="dsh-btn-ghost w-full border-dashed py-2.5 text-[13px]"
               onClick={() => setDraft({ ...draft, worldbook: [...draft.worldbook, newWorldbookEntry(draft.worldbook.length)] })}>
               + 新增世界书条目
             </button>
@@ -208,7 +208,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
         {section === 'regex' && (
           <>
             {draft.regex.map((script, i) => (
-              <div key={script.id} className="rounded-2xl border border-black/10 bg-white p-3">
+              <div key={script.id} className="dsh-card p-3.5">
                 <div className="mb-2 flex items-center justify-between">
                   <input className="text-[12px] font-medium text-slate-600 outline-none" value={script.name}
                     onChange={(e) => {
@@ -254,7 +254,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
                 </div>
               </div>
             ))}
-            <button type="button" className="w-full rounded-2xl border border-dashed border-black/20 py-2.5 text-[13px] text-slate-500"
+            <button type="button" className="dsh-btn-ghost w-full border-dashed py-2.5 text-[13px]"
               onClick={() => setDraft({ ...draft, regex: [...draft.regex, newRegexScript(draft.regex.length)] })}>
               + 新增正则规则
             </button>

@@ -5,17 +5,17 @@ export default function Collapse({ summary, children, defaultOpen = false }: {
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-black/10 bg-black/[0.02]">
+    <div className="dsh-panel my-2 overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-3 py-2 text-left text-[13px] font-medium text-slate-500 active:bg-black/5"
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] font-medium text-[#2b6cb0] active:opacity-70"
       >
-        <span>{summary || '详情'}</span>
-        <span className={'transition-transform ' + (open ? 'rotate-90' : '')}>{'\u25B8'}</span>
+        <span className={'text-[10px] transition-transform ' + (open ? 'rotate-90' : '')}>{'▶'}</span>
+        <span className="flex-1">{summary || '详情'}</span>
       </button>
       {open && (
-        <div className="border-t border-black/5 px-3 py-2 text-[13px] leading-relaxed text-slate-600">
+        <div className="px-3.5 pb-3 pt-0.5 text-[13px] leading-relaxed text-slate-600">
           {children}
         </div>
       )}

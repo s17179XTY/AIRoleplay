@@ -4,17 +4,20 @@ export default function OptionBar({ items, onPick, disabled }: {
   disabled?: boolean;
 }) {
   return (
-    <div className="mt-2 space-y-1.5">
+    <div className="mt-3 space-y-2">
       {items.map((it) => (
         <button
           key={it.key}
           type="button"
           disabled={disabled}
           onClick={() => onPick(it.key + '. ' + it.text)}
-          className="w-full rounded-xl border border-blue-200 bg-blue-50/70 px-3 py-2 text-left text-[13px] leading-relaxed text-blue-800 active:bg-blue-100 disabled:opacity-50"
+          style={{ borderRadius: 9999 }}
+          className="dsh-card flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] leading-relaxed text-slate-700 transition active:scale-[0.99] disabled:opacity-50"
         >
-          <span className="font-semibold">{it.key}. </span>
-          {it.text}
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#eef5ff] text-[11px] font-semibold text-[#0072e3]">
+            {it.key}
+          </span>
+          <span className="flex-1">{it.text}</span>
         </button>
       ))}
     </div>

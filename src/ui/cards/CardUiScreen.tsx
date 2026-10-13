@@ -140,16 +140,16 @@ export default function CardUiScreen({ cardId }: { cardId: string }) {
   if (preview !== null) {
     return (
       <div className="flex h-full flex-col">
-        <header className="sticky top-0 z-10 border-b border-black/5 bg-white/90 px-3 pb-2 pt-3 backdrop-blur">
+        <header className="dsh-header sticky top-0 z-10 px-4 pb-2.5 pt-3.5">
           <div className="flex items-center justify-between">
-            <button type="button" onClick={() => setPreview(null)} className="text-[13px] text-slate-500">返回</button>
+            <button type="button" onClick={() => setPreview(null)} className="dsh-chip">返回</button>
             <div className="text-[14px] font-semibold text-slate-800">提示词预览</div>
-            <button type="button" onClick={() => void onCopy()} className="text-[13px] text-slate-500">复制</button>
+            <button type="button" onClick={() => void onCopy()} className="dsh-chip">复制</button>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto px-3 py-3">
+        <main className="flex-1 overflow-y-auto px-4 py-4">
           <textarea
-            className="h-full min-h-[60vh] w-full rounded-2xl border border-black/10 bg-white p-3 font-mono text-[12px] leading-relaxed outline-none"
+            className="dsh-input h-full min-h-[60vh] w-full p-3.5 font-mono text-[12px] leading-relaxed outline-none"
             value={preview}
             onChange={(e) => setPreview(e.target.value)}
           />
@@ -159,7 +159,7 @@ export default function CardUiScreen({ cardId }: { cardId: string }) {
             type="button"
             disabled={busy}
             onClick={() => void onStart()}
-            className="w-full rounded-2xl bg-[#0072E3] py-3 text-[14px] font-medium text-white disabled:opacity-50"
+            className="dsh-btn w-full py-3 text-[14px]"
           >
             开始游玩
           </button>
@@ -170,15 +170,15 @@ export default function CardUiScreen({ cardId }: { cardId: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="sticky top-0 z-10 border-b border-black/5 bg-white/90 px-3 pb-2 pt-3 backdrop-blur">
+      <header className="dsh-header sticky top-0 z-10 px-4 pb-2.5 pt-3.5">
         <div className="flex items-center justify-between">
-          <button type="button" onClick={closeCardUi} className="text-[13px] text-slate-500">返回</button>
+          <button type="button" onClick={closeCardUi} className="dsh-chip">返回</button>
           <div className="truncate px-2 text-[14px] font-semibold text-slate-800">{pkg.json.name}</div>
-          <button type="button" onClick={() => void onSkip()} className="text-[13px] text-slate-500">跳过界面</button>
+          <button type="button" onClick={() => void onSkip()} className="dsh-chip">跳过界面</button>
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-2 py-2">
+      <main className="flex-1 overflow-y-auto px-4 py-4">
         {html ? (
           <iframe
             ref={iframeRef}
@@ -197,7 +197,7 @@ export default function CardUiScreen({ cardId }: { cardId: string }) {
           type="button"
           disabled={busy}
           onClick={() => void onGenerate()}
-          className="w-full rounded-2xl bg-[#0072E3] py-3 text-[14px] font-medium text-white disabled:opacity-50"
+          className="dsh-btn w-full py-3 text-[14px]"
         >
           生成提示词
         </button>

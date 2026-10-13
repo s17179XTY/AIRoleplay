@@ -1,14 +1,14 @@
 import PlayScreen from './play/PlayScreen';
 import CardListScreen from './cards/CardListScreen';
-import CardUiScreen from './cards/CardUiScreen';
 import CardEditorScreen from './cards/CardEditorScreen';
+import CardUiScreen from './cards/CardUiScreen';
 import SettingsScreen from './settings/SettingsScreen';
 import { useNav } from '../state/useNav';
 
-const TABS: { key: 'cards' | 'play' | 'settings'; label: string }[] = [
-  { key: 'cards', label: '卡片' },
-  { key: 'play', label: '游玩' },
-  { key: 'settings', label: '设置' },
+const TABS: { key: 'cards' | 'play' | 'settings'; label: string; icon: string }[] = [
+  { key: 'cards', label: '卡片', icon: '📚' },
+  { key: 'play', label: '游玩', icon: '💬' },
+  { key: 'settings', label: '设置', icon: '⚙️' },
 ];
 
 export default function AppShell() {
@@ -18,8 +18,11 @@ export default function AppShell() {
   const setTab = useNav((s) => s.setTab);
   const toast = useNav((s) => s.toast);
 
+  const tabActive = (key: 'cards' | 'play' | 'settings') =>
+    tab === key && !editingCardId && !uiCardId;
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="dsh-shell">
       <div className="min-h-0 flex-1">
         {editingCardId ? (
           <CardEditorScreen cardId={editingCardId} />
@@ -35,23 +38,24 @@ export default function AppShell() {
       </div>
 
       {toast && (
-        <div className="pointer-events-none fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-xl bg-black/80 px-3 py-2 text-[12px] text-white">
+        <div className="dsh-float pointer-events-none absolute left-1/2 top-6 z-50 -translate-x-1/2 rounded-full bg-[rgba(20,24,33,0.88)] px-4 py-2 text-[12px] text-white backdrop-blur">
           {toast}
         </div>
       )}
 
-      <nav className="safe-bottom flex shrink-0 border-t border-black/10 bg-white">
+      <nav className="dsh-tabbar safe-bottom flex shrink-0 items-center gap-1 px-3 py-2">
         {TABS.map((t) => (
           <button
             key={t.key}
             type="button"
             onClick={() => setTab(t.key)}
             className={
-              'flex-1 py-3 text-[12px] ' +
-              (tab === t.key && !editingCardId && !uiCardId ? 'font-semibold text-[#0072E3]' : 'text-slate-400')
+              'dsh-chip flex-1 justify-center border-transparent bg-transparent py-2.5 ' +
+              (tabActive(t.key) ? 'dsh-chip-active' : '')
             }
           >
-            {t.label}
+            <span className="text-[13px]">{t.icon}</span>
+            <span>{t.label}</span>
           </button>
         ))}
       </nav>

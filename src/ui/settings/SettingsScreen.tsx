@@ -173,12 +173,12 @@ export default function SettingsScreen() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="sticky top-0 z-10 border-b border-black/5 bg-white/90 px-3 pb-2 pt-3 backdrop-blur">
+      <header className="dsh-header sticky top-0 z-10 px-4 pb-2.5 pt-3.5">
         <div className="text-[15px] font-semibold text-slate-800">设置</div>
         <div className="text-[11px] text-slate-400">模型由你自己接入，数据全部留在本机</div>
       </header>
 
-      <main className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
+      <main className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         <section>
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-[13px] font-semibold text-slate-600">模型接入</h2>
@@ -189,7 +189,7 @@ export default function SettingsScreen() {
           </div>
 
           {providers.map((p) => (
-            <div key={p.id} className="mb-2 rounded-2xl border border-black/10 bg-white p-3">
+            <div key={p.id} className="dsh-card mb-2 p-3.5">
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
                   <div className="truncate text-[13px] font-medium text-slate-700">
@@ -213,7 +213,7 @@ export default function SettingsScreen() {
           {testMsg && <div className="mb-2 rounded-xl bg-black/5 px-3 py-2 text-[12px] text-slate-600">{testMsg}</div>}
 
           {form && (
-            <div className="mb-2 space-y-2 rounded-2xl border border-[#0072E3]/30 bg-white p-3">
+            <div className="dsh-card mb-2 space-y-2.5 p-3.5">
               <input className={inputClass} placeholder="服务商名称" value={form.label}
                 onChange={(e) => setForm({ ...form, label: e.target.value })} />
               <select className={inputClass} value={form.protocol}
@@ -229,7 +229,7 @@ export default function SettingsScreen() {
                 value={form.headers} onChange={(e) => setForm({ ...form, headers: e.target.value })} />
               <div className="flex gap-2">
                 <button type="button" onClick={() => void onSaveProvider()}
-                  className="flex-1 rounded-xl bg-[#0072E3] py-2 text-[13px] font-medium text-white">保存服务商</button>
+                  className="dsh-btn flex-1 py-2.5 text-[13px]">保存服务商</button>
                 <button type="button" onClick={() => setForm(null)}
                   className="rounded-xl border border-black/10 px-4 py-2 text-[13px] text-slate-500">取消</button>
               </div>
@@ -253,7 +253,7 @@ export default function SettingsScreen() {
           {presets.map((m) => {
             const provider = providers.find((p) => p.id === m.providerId);
             return (
-              <div key={m.id} className="mb-2 flex items-center justify-between rounded-2xl border border-black/10 bg-white px-3 py-2">
+              <div key={m.id} className="dsh-card mb-2 flex items-center justify-between px-3.5 py-2.5">
                 <div className="min-w-0">
                   <div className="truncate text-[13px] text-slate-700">
                     {m.model}
@@ -272,14 +272,14 @@ export default function SettingsScreen() {
           })}
 
           {activeProviderId && (
-            <button type="button" className="w-full rounded-2xl border border-black/10 py-2 text-[12px] text-slate-500"
+            <button type="button" className="dsh-btn-ghost w-full py-2.5 text-[12px]"
               onClick={() => void setActive(null, null).then(refresh)}>
               改回使用 mock 模拟模型
             </button>
           )}
 
           {presetOpen && (
-            <div className="mt-2 space-y-2 rounded-2xl border border-[#0072E3]/30 bg-white p-3">
+            <div className="dsh-card mt-2 space-y-2.5 p-3.5">
               <select className={inputClass} value={presetProvider}
                 onChange={(e) => {
                   setPresetProvider(e.target.value);
@@ -316,7 +316,7 @@ export default function SettingsScreen() {
 
               <div className="flex gap-2">
                 <button type="button" onClick={() => void onSavePreset()}
-                  className="flex-1 rounded-xl bg-[#0072E3] py-2 text-[13px] font-medium text-white">保存模型配置</button>
+                  className="dsh-btn flex-1 py-2.5 text-[13px]">保存模型配置</button>
                 <button type="button" onClick={() => setPresetOpen(false)}
                   className="rounded-xl border border-black/10 px-4 py-2 text-[13px] text-slate-500">取消</button>
               </div>
@@ -348,13 +348,13 @@ export default function SettingsScreen() {
                 onChange={(e) => setGlobalConfig({ ...globalConfig, postPrompt: e.target.value })} />
             </label>
             <button type="button" onClick={() => void onSaveGlobal()}
-              className="w-full rounded-xl bg-[#0072E3] py-2 text-[13px] font-medium text-white">保存全局配置</button>
+              className="dsh-btn w-full py-2.5 text-[13px]">保存全局配置</button>
           </div>
         </section>
 
         <section>
           <h2 className="mb-2 text-[13px] font-semibold text-slate-600">阅读设置</h2>
-          <div className="rounded-2xl border border-black/10 bg-white p-3">
+          <div className="dsh-card p-3.5">
             <div className="mb-1 text-[12px] text-slate-500">正文字号</div>
             <div className="flex gap-2">
               {[['14', '小'], ['16', '中'], ['18', '大'], ['20', '特大']].map(([v, label]) => (
@@ -363,8 +363,8 @@ export default function SettingsScreen() {
                   type="button"
                   onClick={() => setFontScale(v)}
                   className={
-                    'flex-1 rounded-xl py-2 text-[12px] ' +
-                    (fontScale === v ? 'bg-[#0072E3] text-white' : 'border border-black/10 text-slate-500')
+                    'flex-1 py-2 text-[12px] ' +
+                    (fontScale === v ? 'dsh-btn' : 'dsh-chip')
                   }
                 >
                   {label}
@@ -382,7 +382,7 @@ export default function SettingsScreen() {
             </button>
           </div>
           {globalRules.map((r) => (
-            <div key={r.id} className="mb-2 rounded-2xl border border-black/10 bg-white p-3">
+            <div key={r.id} className="dsh-card mb-2 p-3.5">
               <div className="mb-2 flex items-center justify-between">
                 <input
                   className="text-[12px] font-medium text-slate-600 outline-none"
@@ -435,11 +435,11 @@ export default function SettingsScreen() {
               数据全部存在本机浏览器里。换设备或清理浏览器前，请先导出备份。
             </div>
             <button type="button" onClick={() => void onExportBackup()}
-              className="w-full rounded-xl bg-[#0072E3] py-2 text-[13px] font-medium text-white">
+              className="dsh-btn w-full py-2.5 text-[13px]">
               导出全部数据
             </button>
             <button type="button" onClick={() => backupRef.current?.click()}
-              className="w-full rounded-xl border border-black/10 py-2 text-[13px] text-slate-600">
+              className="dsh-btn-ghost w-full py-2.5 text-[13px]">
               导入备份
             </button>
             <input
