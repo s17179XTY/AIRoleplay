@@ -45,5 +45,7 @@ export class DshDB extends Dexie {
 export const db = new DshDB();
 
 export function newId(prefix = ''): string {
-  return prefix + crypto.randomUUID();
+  const g = globalThis.crypto as Crypto | undefined;
+  if (g && typeof g.randomUUID === 'function') return prefix + g.randomUUID();
+  return prefix + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
