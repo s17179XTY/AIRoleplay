@@ -43,14 +43,14 @@ export default function AppShell() {
         </div>
       )}
 
-      <nav className="dsh-tabbar safe-bottom flex shrink-0 items-center gap-1 px-3 py-2">
+      <nav className="dsh-tabbar safe-bottom flex shrink-0 items-center gap-2 px-4 pt-2.5">
         {TABS.map((t) => (
           <button
             key={t.key}
             type="button"
             onClick={() => setTab(t.key)}
             className={
-              'dsh-chip flex-1 justify-center border-transparent bg-transparent py-2.5 ' +
+              'dsh-chip flex-1 justify-center border-transparent bg-transparent py-3 text-[12px] ' +
               (tabActive(t.key) ? 'dsh-chip-active' : '')
             }
           >

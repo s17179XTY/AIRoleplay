@@ -7,7 +7,7 @@ describe('演示卡包', () => {
   it('打成 zip 再解包结构完整', () => {
     const pkg = seedPackage();
     const back = unpackCard(packCard(pkg));
-    expect(back.json.name).toContain('演示卡');
+    expect(back.json.name).toContain('寻找新XP');
     expect(back.texts.map((t) => t.path).sort()).toEqual(['prompt.template.md', 'ui/index.html', 'worldbook.json']);
     expect(back.assets).toHaveLength(1);
   });
@@ -17,5 +17,6 @@ describe('演示卡包', () => {
     const entries = parseWorldbookFile(pkg.texts.find((t) => t.path === 'worldbook.json')!.text);
     expect(entries.length).toBeGreaterThan(0);
     expect(pkg.texts.find((t) => t.path === 'ui/index.html')!.text).toContain('data-dsh-field');
+    expect(pkg.texts.find((t) => t.path === 'prompt.template.md')!.text).toContain('【初始信息设定】');
   });
 });

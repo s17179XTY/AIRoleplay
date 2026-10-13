@@ -2,6 +2,7 @@ import type { ModelParams } from '../storage/types';
 import type { WbEntryInput } from '../assembler/types';
 
 export const CARD_SPEC = 'dsh-card/1';
+export const CARD_VERSION_MARKER = 'dsh-card/1';
 
 export interface MemoryRule {
   parser: 'details-v1' | 'none';

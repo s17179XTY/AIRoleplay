@@ -21,7 +21,12 @@ beforeEach(async () => {
   useNav.setState({ tab: 'cards', editingCardId: null, uiCardId: null, toast: null });
   useSession.setState({ ready: false, cardId: null, cardName: '', card: null, modelLabel: 'mock', chatId: null, messages: [], draft: '', streaming: false, error: null });
   setAdapter(createMockAdapter('模拟回复', { chunkSize: 500, delayMs: 0 }));
-  setFieldCollector(async () => ({ xp: { values: ['A01', 'B02'], labels: ['校园日常', '读心能力'] } }));
+  setFieldCollector(async () => ({
+    xp: { values: ['A01', 'B02'], labels: ['校园日常', '读心能力'] },
+    userName: { values: ['苏小染'], labels: ['苏小染'] },
+    scenario: { values: ['秋末冬初的午后，市一中三楼女厕所。'], labels: ['秋末冬初的午后，市一中三楼女厕所。'] },
+    worldview: { values: ['现代都市日常，高中校园背景。'], labels: ['现代都市日常，高中校园背景。'] },
+  }));
 });
 
 describe('卡片交互界面', () => {
@@ -34,9 +39,11 @@ describe('卡片交互界面', () => {
     fireEvent.click(screen.getByText('生成提示词'));
     await waitFor(() => expect(screen.getByText('提示词预览')).toBeTruthy());
     const area = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(area.value).toContain('【初始信息设定】');
     expect(area.value).toContain('校园日常');
     expect(area.value).toContain('读心能力');
     expect(area.value).toContain('市一中');
+    expect(area.value).toContain('苏小染');
 
     fireEvent.click(screen.getByText('开始游玩'));
     await waitFor(async () => {

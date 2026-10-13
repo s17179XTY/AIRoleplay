@@ -8,7 +8,7 @@ export default function Composer({ disabled, onSend }: { disabled?: boolean; onS
     setText('');
   };
   return (
-    <div className="dsh-tabbar safe-bottom px-3 pb-2 pt-2">
+    <div className="dsh-tabbar safe-bottom px-4 pt-2.5">
       <div className="flex items-end gap-2">
         <div className="dsh-input flex flex-1 items-end px-3.5 py-2.5">
           <textarea

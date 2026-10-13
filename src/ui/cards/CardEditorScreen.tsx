@@ -21,6 +21,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
   const [base, setBase] = useState<CardPackage | null>(null);
   const [draft, setDraft] = useState<CardDraft | null>(null);
   const [section, setSection] = useState<Section>('basic');
+  const [loadError, setLoadError] = useState<string | null>(null);
   const closeEditor = useNav((s) => s.closeEditor);
   const showToast = useNav((s) => s.showToast);
   const reloadCard = useSession((s) => s.reloadCard);
@@ -29,8 +30,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
     void (async () => {
       const pkg = await loadCardPackage(cardId);
       if (!pkg) {
-        showToast('卡片不存在');
-        closeEditor();
+        setLoadError('这张卡片的数据不完整（多半来自旧版本）。请返回卡片列表删除它，再重新导入或新建。');
         return;
       }
       setBase(pkg);
@@ -43,6 +43,15 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
       setDraft((d) => (d ? { ...d, json: { ...d.json, ...patch } } : d)),
     [],
   );
+
+  if (loadError) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
+        <div className="text-[13px] leading-relaxed text-slate-500">{loadError}</div>
+        <button type="button" className="dsh-btn px-5 py-2.5 text-[13px]" onClick={closeEditor}>返回卡片列表</button>
+      </div>
+    );
+  }
 
   if (!draft || !base) {
     return <div className="flex h-full items-center justify-center text-[13px] text-slate-400">加载中…</div>;

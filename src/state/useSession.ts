@@ -93,14 +93,20 @@ export const useSession = create<SessionState>((set, get) => ({
   init: async () => {
     await db.open();
     const cards = await listCards();
-    const cardId = cards.length > 0 ? cards[0].id : await ensureSeedCard();
+    for (const c of cards) {
+      if (await loadCardPackage(c.id)) {
+        await get().openCard(c.id);
+        return;
+      }
+    }
+    const cardId = await ensureSeedCard();
     await get().openCard(cardId);
   },
 
   openCard: async (cardId: string) => {
     const card = await loadCardPackage(cardId);
     if (!card) {
-      set({ ready: true, error: '卡片不存在或已损坏' });
+      set({ ready: true, error: '这张卡片的数据不完整（多半来自旧版本）。请到「卡片」里删掉它，再重新导入或新建一张。' });
       return;
     }
     const chats = await db.chats.where('cardId').equals(cardId).toArray();

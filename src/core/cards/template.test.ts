@@ -54,6 +54,26 @@ describe('沙箱与字段收集', () => {
     expect(fields.xp.labels).toEqual(['校园日常']);
     expect(fields.xp.values).toEqual(['A01']);
     expect(fields.userName.values).toEqual(['阿离']);
+
+    // 勾选的 XP 必须真的进入生成的提示词
+    const tpl = pkg.texts.find((t) => t.path === 'prompt.template.md')!.text;
+    const out = renderTemplate(tpl, { fields, scenario: '', persona: '', cardName: '卡', user: '我', date: '2026-10-13', time: '10:00' });
+    expect(out).toContain('用户选择的偏好：校园日常');
+  });
+
+  it('文本框的显示名就是用户输入的值，而不是外层 label 文案', () => {
+    const pkg = seedPackage();
+    const html = pkg.texts.find((t) => t.path === 'ui/index.html')!.text;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const gender = doc.querySelector('input[data-dsh-field=gender]') as HTMLInputElement;
+    const extra = doc.querySelector('textarea[data-dsh-field=extra]') as HTMLTextAreaElement;
+    const fields = collectFields(doc);
+    expect(fields.gender.labels).toEqual([gender.value]);
+    expect(fields.extra.labels[0]).toBe(extra.value);
+    const tpl = pkg.texts.find((t) => t.path === 'prompt.template.md')!.text;
+    const out = renderTemplate(tpl, { fields, scenario: '', persona: '', cardName: '卡', user: '我', date: '2026-10-13', time: '10:00' });
+    expect(out).toContain('性别：' + gender.value);
+    expect(out).not.toContain('性别：性别');
   });
 
   it('srcdoc 注入 CSP 与桥脚本', () => {

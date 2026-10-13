@@ -75,7 +75,13 @@ export async function loadCardPackage(cardId: string): Promise<CardPackage | nul
 export async function ensureSeedCard(): Promise<string> {
   const pkg = seedPackage();
   const existing = await db.cards.get(pkg.json.id);
-  if (existing) return existing.id;
+  if (existing) {
+    const loaded = await loadCardPackage(existing.id);
+    const isBuiltinDemo = existing.author === pkg.json.author;
+    // 已损坏（老版本只写了卡片行、没有写 card.json）→ 重建；
+    // 内置演示卡版本升级 → 覆盖；用户自己改过的卡片不动。
+    if (loaded && !(isBuiltinDemo && loaded.json.version !== pkg.json.version)) return existing.id;
+  }
   return saveCardPackage(pkg);
 }
 

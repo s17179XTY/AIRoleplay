@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
-import { deleteCard, listCards, loadCardPackage, saveCardPackage, worldbookOf } from './cardRepo';
+import { deleteCard, ensureSeedCard, listCards, loadCardPackage, saveCardPackage, worldbookOf } from './cardRepo';
+import { DEMO_CARD_ID } from './seed';
 import { parseCardJson, serializeCardJson, CARD_SPEC, emptyCardJson } from '../cards/spec';
 import { packCard, unpackCard } from '../cards/package';
 
@@ -65,6 +66,19 @@ describe('卡片仓库', () => {
     expect(worldbookOf(loaded!)[0].content).toBe('世界书内容');
     expect(loaded!.assets[0].mime).toBe('image/png');
     expect((await listCards()).length).toBe(1);
+  });
+
+  it('旧版本遗留的坏卡片（只有卡片行没有 card.json）会被自动修复', async () => {
+    await db.cards.add({
+      id: DEMO_CARD_ID, name: '坏卡', author: '内置示例', version: '1.0.0', description: '',
+      tags: [], source: 'local', spec: CARD_SPEC, createdAt: 1, updatedAt: 1,
+    });
+    expect(await loadCardPackage(DEMO_CARD_ID)).toBeNull();
+    const id = await ensureSeedCard();
+    expect(id).toBe(DEMO_CARD_ID);
+    const repaired = await loadCardPackage(id);
+    expect(repaired).not.toBeNull();
+    expect(repaired!.texts.find((t) => t.path === 'ui/index.html')?.text).toContain('data-dsh-field');
   });
 
   it('删除卡片会清掉文件与素材', async () => {

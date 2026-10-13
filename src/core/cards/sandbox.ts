@@ -12,34 +12,36 @@ export function collectFields(root: ParentNode): FieldMap {
     if (!name) return;
     const type = el.getAttribute('data-dsh-type') ?? (el as HTMLInputElement).type ?? 'text';
     const value = el.getAttribute('data-dsh-value') ?? (el as HTMLInputElement).value ?? '';
-    let label = el.getAttribute('data-dsh-label') ?? '';
-    if (!label) {
+    const explicitLabel = el.getAttribute('data-dsh-label') ?? '';
+    // 勾选项的显示名来自它所在的 <label>；文本框这类自由输入，显示名就是用户输入的值本身
+    let optionLabel = explicitLabel;
+    if (!optionLabel) {
       const holder = (el as Element).closest('label');
-      if (holder) label = (holder.textContent ?? '').trim();
+      if (holder) optionLabel = (holder.textContent ?? '').trim();
     }
     const field = ensure(name);
     if (type === 'checkbox' || (el as HTMLInputElement).type === 'checkbox') {
       if ((el as HTMLInputElement).checked) {
         field.values.push(value);
-        field.labels.push(label || value);
+        field.labels.push(optionLabel || value);
       }
     } else if (type === 'radio' || (el as HTMLInputElement).type === 'radio') {
       if ((el as HTMLInputElement).checked) {
         field.values = [value];
-        field.labels = [label || value];
+        field.labels = [optionLabel || value];
       }
     } else if ((el as HTMLSelectElement).tagName === 'SELECT') {
       const select = el as HTMLSelectElement;
       const selected = select.options[select.selectedIndex];
       if (selected && selected.value) {
         field.values = [selected.value];
-        field.labels = [selected.textContent?.trim() || selected.value];
+        field.labels = [explicitLabel || selected.textContent?.trim() || selected.value];
       }
     } else {
       const v = (el as HTMLInputElement).value ?? '';
       if (v) {
         field.values = [v];
-        field.labels = [label || v];
+        field.labels = [explicitLabel || v];
       }
     }
   });

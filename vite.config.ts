@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    host: true, // 允许手机通过局域网 IP 访问，便于真机调试
     watch: {
       // 忽略编辑器原子写入的临时目录，避免文件监视器 EBUSY 崩溃
       ignored: ['**/.*.tmpdir/**', '**/*.tmp', '**/shots/**'],

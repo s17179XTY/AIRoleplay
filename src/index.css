@@ -19,7 +19,7 @@ html, body, #root { height: 100%; }
 
 body {
   margin: 0;
-  background: #e8eaf1;
+  background: radial-gradient(120% 80% at 50% 0%, #eef1f7 0%, #e3e6ef 60%, #dfe3ec 100%);
   color: var(--dsh-ink);
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -153,5 +153,5 @@ body {
   box-shadow: 0 -12px 40px rgba(16, 24, 40, 0.18);
 }
 
-.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-bottom { padding-bottom: calc(env(safe-area-inset-bottom) + 10px); }
 .safe-top { padding-top: env(safe-area-inset-top); }
