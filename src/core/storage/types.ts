@@ -13,7 +13,7 @@ export interface CardRecord {
 }
 export type CardFileKind = 'json' | 'html' | 'css' | 'template' | 'worldbook' | 'regex' | 'asset';
 export interface CardFileRecord { cardId: string; path: string; kind: CardFileKind; text?: string; assetId?: string; }
-export interface AssetRecord { id: string; mime: string; size: number; blob: Blob; }
+export interface AssetRecord { id: string; mime: string; size: number; bytes: ArrayBuffer; }
 export interface ChatRecord {
   id: string; cardId: string; title: string; vars: Record<string, string>;
   promptSnapshot: string; providerId: string | null; modelPresetId: string | null;

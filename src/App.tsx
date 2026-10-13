@@ -1,5 +1,5 @@
-import PlayScreen from './ui/play/PlayScreen';
+import AppShell from './ui/AppShell';
 
 export default function App() {
-  return <PlayScreen />;
+  return <AppShell />;
 }

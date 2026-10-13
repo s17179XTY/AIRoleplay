@@ -1,0 +1,76 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { db } from './db';
+import { deleteCard, listCards, loadCardPackage, saveCardPackage, worldbookOf } from './cardRepo';
+import { parseCardJson, serializeCardJson, CARD_SPEC, emptyCardJson } from '../cards/spec';
+import { packCard, unpackCard } from '../cards/package';
+
+const mkPkg = () => {
+  const json = emptyCardJson('测试卡');
+  json.id = 'card-test-1';
+  json.prompts.prompt = '系统提示词';
+  json.worldbook = 'worldbook.json';
+  json.ui = { entry: 'ui/index.html', autoOpen: true };
+  return {
+    json,
+    texts: [
+      { path: 'worldbook.json', text: JSON.stringify({ version: 1, entries: [{ id: 'w1', keys: ['甲'], content: '世界书内容' }] }) },
+      { path: 'ui/index.html', text: '<h1>界面</h1>' },
+    ],
+    assets: [{ path: 'assets/cover.png', mime: 'image/png', bytes: new Uint8Array([137, 80, 78, 71]) }],
+  };
+};
+
+beforeEach(async () => {
+  await db.cardFiles.clear();
+  await db.cards.clear();
+  await db.assets.clear();
+});
+
+describe('卡片清单', () => {
+  it('spec 校验与默认值补齐', () => {
+    const json = parseCardJson(JSON.stringify({ spec: CARD_SPEC, name: '甲' }));
+    expect(json.memory.recentLimit).toBe(4);
+    expect(json.prompts.prompt).toBe('');
+    expect(() => parseCardJson('{"spec":"other/9"}')).toThrow();
+    expect(() => parseCardJson('not json')).toThrow();
+  });
+
+  it('序列化后仍可解析', () => {
+    const j = emptyCardJson('乙');
+    expect(parseCardJson(serializeCardJson(j)).name).toBe('乙');
+  });
+});
+
+describe('卡片包 zip', () => {
+  it('打包再解包内容一致', () => {
+    const pkg = mkPkg();
+    const bytes = packCard(pkg);
+    const back = unpackCard(bytes);
+    expect(back.json.name).toBe('测试卡');
+    expect(back.texts.find((t) => t.path === 'ui/index.html')?.text).toBe('<h1>界面</h1>');
+    expect(back.assets.find((a) => a.path === 'assets/cover.png')?.bytes.length).toBe(4);
+  });
+
+  it('缺少 card.json 时给出明确错误', () => {
+    expect(() => unpackCard(new Uint8Array([1, 2, 3]))).toThrow();
+  });
+});
+
+describe('卡片仓库', () => {
+  it('保存后可读回，世界书可解析', async () => {
+    const id = await saveCardPackage(mkPkg());
+    const loaded = await loadCardPackage(id);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.json.prompts.prompt).toBe('系统提示词');
+    expect(worldbookOf(loaded!)[0].content).toBe('世界书内容');
+    expect(loaded!.assets[0].mime).toBe('image/png');
+    expect((await listCards()).length).toBe(1);
+  });
+
+  it('删除卡片会清掉文件与素材', async () => {
+    const id = await saveCardPackage(mkPkg());
+    await deleteCard(id);
+    expect(await db.cardFiles.where('cardId').equals(id).count()).toBe(0);
+    expect(await db.cards.count()).toBe(0);
+  });
+});

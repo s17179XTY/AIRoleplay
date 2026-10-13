@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 import { db, newId } from '../core/storage/db';
-import { seedDemoCard } from '../core/storage/seed';
 import type { MessageRecord } from '../core/storage/types';
 import { DEFAULT_CAPABILITY, DEFAULT_PARAMS } from '../core/storage/types';
 import { assemble } from '../core/assembler/assemble';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import type { ProviderAdapter } from '../core/providers/types';
+import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
+import type { CardPackage } from '../core/cards/package';
 
 const MOCK_CFG = { id: 'mock', baseUrl: '', apiKey: '', extraHeaders: {} };
 
@@ -16,13 +17,17 @@ export function setAdapter(a: ProviderAdapter | null): void {
 
 export interface SessionState {
   ready: boolean;
+  cardId: string | null;
   cardName: string;
+  card: CardPackage | null;
   chatId: string | null;
   messages: MessageRecord[];
   draft: string;
   streaming: boolean;
   error: string | null;
   init: () => Promise<void>;
+  openCard: (cardId: string) => Promise<void>;
+  reloadCard: () => Promise<void>;
   send: (text: string) => Promise<void>;
   branchTo: (messageId: string) => Promise<void>;
   regenerate: () => Promise<void>;
@@ -57,7 +62,9 @@ function macroContext(cardName: string, persona: string) {
 
 export const useSession = create<SessionState>((set, get) => ({
   ready: false,
+  cardId: null,
   cardName: '',
+  card: null,
   chatId: null,
   messages: [],
   draft: '',
@@ -66,44 +73,62 @@ export const useSession = create<SessionState>((set, get) => ({
 
   init: async () => {
     await db.open();
-    const card = seedDemoCard();
-    const existing = await db.cards.get(card.record.id);
-    if (!existing) {
-      const now = Date.now();
-      await db.cards.add({ ...card.record, createdAt: now, updatedAt: now });
+    const cards = await listCards();
+    const cardId = cards.length > 0 ? cards[0].id : await ensureSeedCard();
+    await get().openCard(cardId);
+  },
+
+  openCard: async (cardId: string) => {
+    const card = await loadCardPackage(cardId);
+    if (!card) {
+      set({ ready: true, error: '卡片不存在或已损坏' });
+      return;
     }
-    let chat = (await db.chats.where('cardId').equals(card.record.id).toArray())[0];
+    const chats = await db.chats.where('cardId').equals(cardId).toArray();
+    let chat = chats.sort((a, b) => b.updatedAt - a.updatedAt)[0];
     if (!chat) {
       const id = newId('chat_');
       chat = {
-        id, cardId: card.record.id, title: card.record.name, vars: {}, promptSnapshot: '',
+        id, cardId, title: card.json.name, vars: {}, promptSnapshot: '',
         providerId: null, modelPresetId: null, currentLeafId: null,
         createdAt: Date.now(), updatedAt: Date.now(), archived: 0,
       };
       await db.chats.add(chat);
-      const first: MessageRecord = {
-        id: newId('m_'), chatId: id, parentId: null, role: 'assistant',
-        raw: card.firstMessage, status: 'complete', tokensIn: 0, tokensOut: 0,
-        model: 'seed', createdAt: Date.now(),
-      };
-      await db.messages.add(first);
-      await db.chats.update(id, { currentLeafId: first.id });
-      chat.currentLeafId = first.id;
+      if (card.json.firstMessage) {
+        const first: MessageRecord = {
+          id: newId('m_'), chatId: id, parentId: null, role: 'assistant',
+          raw: card.json.firstMessage, status: 'complete', tokensIn: 0, tokensOut: 0,
+          model: 'seed', createdAt: Date.now(),
+        };
+        await db.messages.add(first);
+        await db.chats.update(id, { currentLeafId: first.id });
+        chat.currentLeafId = first.id;
+      }
     }
     set({
       ready: true,
-      cardName: card.record.name,
+      cardId,
+      card,
+      cardName: card.json.name,
       chatId: chat.id,
       messages: await pathToLeaf(chat.id, chat.currentLeafId),
       error: null,
+      draft: '',
+      streaming: false,
     });
   },
 
+  reloadCard: async () => {
+    const { cardId } = get();
+    if (!cardId) return;
+    const card = await loadCardPackage(cardId);
+    if (card) set({ card, cardName: card.json.name });
+  },
+
   send: async (text: string) => {
-    const { chatId } = get();
+    const { chatId, card } = get();
     const clean = text.trim();
-    if (!chatId || !clean || get().streaming) return;
-    const card = seedDemoCard();
+    if (!chatId || !clean || get().streaming || !card) return;
     const chat = await db.chats.get(chatId);
     const parentId = chat?.currentLeafId ?? null;
 
@@ -117,17 +142,26 @@ export const useSession = create<SessionState>((set, get) => ({
     const path = await pathToLeaf(chatId, userMsg.id);
     set({ messages: path, streaming: true, error: null, draft: '' });
 
+    const configRow = await db.configs.where('scope').equals('global').first();
     const assembled = assemble({
       card: {
-        pre: card.prompts.pre, prompt: card.prompts.prompt, post: card.prompts.post,
-        description: card.record.description, persona: card.persona, scenario: card.scenario,
+        pre: card.json.prompts.pre,
+        prompt: card.json.prompts.prompt,
+        post: card.json.prompts.post,
+        description: card.json.description,
+        persona: card.json.persona.intro,
+        scenario: card.json.scenario,
       },
-      config: card.config,
-      worldbook: card.worldbook,
+      config: {
+        prompt: configRow?.prompt ?? '',
+        prePrompt: configRow?.prePrompt ?? '',
+        postPrompt: configRow?.postPrompt ?? '',
+      },
+      worldbook: worldbookOf(card),
       memories: [],
       history: path.slice(0, -1).map((m) => ({ id: m.id, role: m.role, content: m.raw })),
       userInput: clean,
-      macros: macroContext(card.record.name, card.persona),
+      macros: macroContext(card.json.name, card.json.persona.intro),
       limits: {
         contextLength: DEFAULT_PARAMS.contextLength,
         maxTokens: DEFAULT_PARAMS.maxTokens,
@@ -136,7 +170,7 @@ export const useSession = create<SessionState>((set, get) => ({
       },
     });
 
-    const active = adapter ?? createMockAdapter(mockReplyFor(clean, card.record.name), { delayMs: 0 });
+    const active = adapter ?? createMockAdapter(mockReplyFor(clean, card.json.name), { delayMs: 0 });
     let acc = '';
     let failure: string | null = null;
 
