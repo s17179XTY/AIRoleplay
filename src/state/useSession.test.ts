@@ -8,7 +8,8 @@ beforeEach(async () => {
   await db.chats.clear();
   await db.cards.clear();
   useSession.setState({
-    ready: false, cardName: '', chatId: null, messages: [], draft: '', streaming: false, error: null,
+    ready: false, cardId: null, cardName: '', card: null, modelLabel: 'mock', chatId: null,
+    messages: [], draft: '', streaming: false, error: null, regexRules: [], memories: [], memoryCount: 0,
   });
   setAdapter(createMockAdapter('回复内容', { chunkSize: 100, delayMs: 0 }));
 });
@@ -39,6 +40,47 @@ describe('会话 store', () => {
     await useSession.getState().send('第一句');
     await useSession.getState().send('第二句');
     expect(useSession.getState().messages).toHaveLength(5);
+  });
+
+  it('AI 输出里的记忆被托管，并在下一轮注入提示词', async () => {
+    const seen: string[][] = [];
+    setAdapter({
+      id: 'mock',
+      async listModels() { return []; },
+      async *streamChat(_cfg, req) {
+        seen.push(req.messages.map((m) => m.content));
+        yield { type: 'text', delta: '<plot>正文</plot>' };
+        yield {
+          type: 'text',
+          delta: '<details><summary>近期记忆</summary>[1]（2026-10-13 傍晚）她拆穿了偷窥者。</details>',
+        };
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    });
+    await useSession.getState().init();
+    await useSession.getState().send('第一句');
+    const stored = await db.memories.toArray();
+    expect(stored).toHaveLength(1);
+    expect(stored[0].text).toContain('拆穿了偷窥者');
+    await useSession.getState().send('第二句');
+    const secondCall = seen[seen.length - 1].join('\n');
+    expect(secondCall).toContain('【近期记忆】');
+    expect(secondCall).toContain('拆穿了偷窥者');
+    // 历史里的记忆区块被剥离：记忆正文只出现在回注条目里，不会重复
+    const dup = seen[seen.length - 1].filter((c) => c.includes('拆穿了偷窥者')).length;
+    expect(dup).toBe(1);
+  });
+
+  it('删除消息会连同其后的分支一起删除', async () => {
+    await useSession.getState().init();
+    await useSession.getState().send('第一句');
+    const before = useSession.getState().messages.length;
+    const userMsg = useSession.getState().messages[1];
+    await useSession.getState().deleteMessage(userMsg.id);
+    const after = useSession.getState().messages.length;
+    expect(after).toBe(before - 2);
+    const left = await db.messages.where('chatId').equals(useSession.getState().chatId!).toArray();
+    expect(left.length).toBe(before - 2);
   });
 
   it('branchTo 之后世界线缩短，再 send 会长出新分支', async () => {

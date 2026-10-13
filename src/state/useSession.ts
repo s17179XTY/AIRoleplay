@@ -1,12 +1,16 @@
 import { create } from 'zustand';
 import { db, newId } from '../core/storage/db';
-import type { MessageRecord } from '../core/storage/types';
+import type { MemoryRecord, MessageRecord } from '../core/storage/types';
 import { DEFAULT_CAPABILITY, DEFAULT_PARAMS } from '../core/storage/types';
 import { assemble } from '../core/assembler/assemble';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import type { ProviderAdapter } from '../core/providers/types';
 import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
 import { getActive } from '../core/storage/providerRepo';
+import { displayRules, loadRulesForChat, promptRules } from '../core/storage/regexRepo';
+import { applyRegexRules, stripMemoryAndThink, type RegexRule } from '../core/cards/regex';
+import { deleteMemory, ingestMemories, listMemories, toMemoryItems } from '../core/storage/memoryStore';
+import { extractAll } from '../core/render/extract';
 import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
 
@@ -23,6 +27,13 @@ export interface SessionState {
   cardName: string;
   card: CardPackage | null;
   modelLabel: string;
+  regexRules: RegexRule[];
+  memoryCount: number;
+  memories: MemoryRecord[];
+  openChat: (chatId: string) => Promise<void>;
+  newChat: () => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<void>;
+  removeMemory: (id: string) => Promise<void>;
   chatId: string | null;
   messages: MessageRecord[];
   draft: string;
@@ -70,6 +81,9 @@ export const useSession = create<SessionState>((set, get) => ({
   cardName: '',
   card: null,
   modelLabel: 'mock 模拟模型',
+  regexRules: [],
+  memoryCount: 0,
+  memories: [],
   chatId: null,
   messages: [],
   draft: '',
@@ -111,6 +125,8 @@ export const useSession = create<SessionState>((set, get) => ({
       }
     }
     const activePreset = await getActive();
+    const rules = await loadRulesForChat(chat.id, card);
+    const memories = await listMemories(chat.id);
     set({
       ready: true,
       cardId,
@@ -119,6 +135,9 @@ export const useSession = create<SessionState>((set, get) => ({
       cardName: card.json.name,
       chatId: chat.id,
       messages: await pathToLeaf(chat.id, chat.currentLeafId),
+      regexRules: displayRules(rules),
+      memoryCount: memories.length,
+      memories,
       error: null,
       draft: '',
       streaming: false,
@@ -167,6 +186,15 @@ export const useSession = create<SessionState>((set, get) => ({
     set({ messages: path, streaming: true, error: null, draft: '' });
 
     const configRow = await db.configs.where('scope').equals('global').first();
+    const allRules = await loadRulesForChat(chatId, card);
+    const toPromptRules = promptRules(allRules);
+    const memoryRecords = await listMemories(chatId);
+    const stripMemories = card.json.memory?.stripFromHistory !== false;
+    const historyItems = path.slice(0, -1).map((m) => {
+      let content = stripMemories ? stripMemoryAndThink(m.raw) : m.raw;
+      if (toPromptRules.length > 0) content = applyRegexRules(content, toPromptRules);
+      return { id: m.id, role: m.role, content };
+    });
     const assembled = assemble({
       card: {
         pre: card.json.prompts.pre,
@@ -182,8 +210,8 @@ export const useSession = create<SessionState>((set, get) => ({
         postPrompt: configRow?.postPrompt ?? '',
       },
       worldbook: worldbookOf(card),
-      memories: [],
-      history: path.slice(0, -1).map((m) => ({ id: m.id, role: m.role, content: m.raw })),
+      memories: toMemoryItems(memoryRecords),
+      history: historyItems,
       userInput: clean,
       setup: setupPrompt,
       macros: macroContext(card.json.name, card.json.persona.intro),
@@ -236,12 +264,88 @@ export const useSession = create<SessionState>((set, get) => ({
     };
     await db.messages.add(assistantMsg);
     await db.chats.update(chatId, { currentLeafId: assistantMsg.id, updatedAt: Date.now() });
+
+    if (!failure && card.json.memory?.parser !== 'none' && acc.trim()) {
+      const extracted = extractAll(acc).memories;
+      const limit = configRow?.memoryLimit ?? card.json.memory?.recentLimit ?? 4;
+      await ingestMemories(chatId, assistantMsg.id, extracted, limit);
+    }
+    const freshRules = await loadRulesForChat(chatId, card);
     set({
       messages: await pathToLeaf(chatId, assistantMsg.id),
+      regexRules: displayRules(freshRules),
+      memories: await listMemories(chatId),
+      memoryCount: (await listMemories(chatId)).length,
       draft: '',
       streaming: false,
       error: failure,
     });
+  },
+
+  openChat: async (chatId: string) => {
+    const chat = await db.chats.get(chatId);
+    if (!chat) return;
+    const card = await loadCardPackage(chat.cardId);
+    if (!card) return;
+    const rules = await loadRulesForChat(chatId, card);
+    set({
+      ready: true, cardId: chat.cardId, card, cardName: card.json.name, chatId,
+      messages: await pathToLeaf(chatId, chat.currentLeafId),
+      regexRules: displayRules(rules), memories: await listMemories(chatId),
+      memoryCount: (await listMemories(chatId)).length,
+      draft: '', streaming: false, error: null,
+    });
+  },
+
+  newChat: async () => {
+    const { cardId, card } = get();
+    if (!cardId || !card) return;
+    const chatId = newId('chat_');
+    await db.chats.add({
+      id: chatId, cardId, title: card.json.name + ' ' + new Date().toLocaleDateString('zh-CN'),
+      vars: {}, promptSnapshot: '', providerId: null, modelPresetId: null, currentLeafId: null,
+      createdAt: Date.now(), updatedAt: Date.now(), archived: 0,
+    });
+    if (card.json.firstMessage) {
+      const first: MessageRecord = {
+        id: newId('m_'), chatId, parentId: null, role: 'assistant',
+        raw: card.json.firstMessage, status: 'complete', tokensIn: 0, tokensOut: 0,
+        model: 'seed', createdAt: Date.now(),
+      };
+      await db.messages.add(first);
+      await db.chats.update(chatId, { currentLeafId: first.id });
+    }
+    await get().openChat(chatId);
+  },
+
+  deleteMessage: async (messageId: string) => {
+    const { chatId } = get();
+    if (!chatId) return;
+    const all = await db.messages.where('chatId').equals(chatId).toArray();
+    const doomed = new Set<string>([messageId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const m of all) {
+        if (m.parentId && doomed.has(m.parentId) && !doomed.has(m.id)) {
+          doomed.add(m.id);
+          grew = true;
+        }
+      }
+    }
+    const target = all.find((m) => m.id === messageId);
+    for (const id of doomed) await db.messages.delete(id);
+    const newLeaf = target?.parentId ?? null;
+    await db.chats.update(chatId, { currentLeafId: newLeaf, updatedAt: Date.now() });
+    set({ messages: await pathToLeaf(chatId, newLeaf) });
+  },
+
+  removeMemory: async (id: string) => {
+    await deleteMemory(id);
+    const { chatId } = get();
+    if (!chatId) return;
+    const memories = await listMemories(chatId);
+    set({ memories, memoryCount: memories.length });
   },
 
   branchTo: async (messageId: string) => {

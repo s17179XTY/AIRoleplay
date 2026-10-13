@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { db } from '../../core/storage/db';
-import type { ModelCapability, ModelParams, ModelPresetRecord, ProviderRecord } from '../../core/storage/types';
+import type { ModelCapability, ModelParams, ModelPresetRecord, ProviderRecord, RegexScriptRecord } from '../../core/storage/types';
 import { DEFAULT_CAPABILITY, DEFAULT_PARAMS } from '../../core/storage/types';
 import {
   deletePreset, deleteProvider, getActive, listPresets, listProviders,
   savePreset, saveProvider, setActive, testConnection,
 } from '../../core/storage/providerRepo';
 import { defaultCapabilityFor } from '../../core/providers/registry';
+import { exportAll, importAll } from '../../core/storage/backup';
+import { downloadBytes, readFileBytes } from '../cards/fileUtils';
+import { newRegexScript } from '../cards/draft';
+import { useSetting } from '../../state/useSetting';
+import { useSession } from '../../state/useSession';
 import { useNav } from '../../state/useNav';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
@@ -38,6 +43,11 @@ export default function SettingsScreen() {
   const [capabilities, setCapabilities] = useState<ModelCapability>({ ...DEFAULT_CAPABILITY });
   const [globalConfig, setGlobalConfig] = useState({ memoryLimit: 4, prePrompt: '', postPrompt: '', prompt: '' });
   const showToast = useNav((s) => s.showToast);
+  const reloadCard = useSession((s) => s.reloadCard);
+  const [fontScale, setFontScale] = useSetting('fontScale', '16');
+  const [globalRules, setGlobalRules] = useState<RegexScriptRecord[]>([]);
+  const backupRef = useRef<HTMLInputElement>(null);
+  const [chatsCount, setChatsCount] = useState(0);
 
   const refresh = useCallback(async () => {
     const [ps, ms, active] = await Promise.all([listProviders(), listPresets(), getActive()]);
@@ -47,6 +57,9 @@ export default function SettingsScreen() {
     setActivePresetId(active?.preset.id ?? null);
     const cfg = await db.configs.where('scope').equals('global').first();
     if (cfg) setGlobalConfig({ memoryLimit: cfg.memoryLimit, prePrompt: cfg.prePrompt, postPrompt: cfg.postPrompt, prompt: cfg.prompt });
+    const rules = await db.regexScripts.where('scope').equals('global').toArray();
+    setGlobalRules(rules.sort((a, b) => a.order - b.order));
+    setChatsCount(await db.chats.count());
   }, []);
 
   useEffect(() => {
@@ -95,6 +108,46 @@ export default function SettingsScreen() {
       prompt: globalConfig.prompt,
     });
     showToast('全局配置已保存');
+  };
+
+  const addGlobalRule = async () => {
+    const rule = newRegexScript(globalRules.length);
+    await db.regexScripts.put({
+      id: rule.id, scope: 'global', chatId: null, name: rule.name, pattern: rule.pattern,
+      flags: rule.flags, replacement: rule.replacement, enabled: rule.enabled,
+      order: rule.order, target: 'display',
+    });
+    await refresh();
+  };
+
+  const patchGlobalRule = async (id: string, patch: Partial<RegexScriptRecord>) => {
+    const row = await db.regexScripts.get(id);
+    if (!row) return;
+    await db.regexScripts.put({ ...row, ...patch });
+    setGlobalRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
+  const removeGlobalRule = async (id: string) => {
+    await db.regexScripts.delete(id);
+    await refresh();
+  };
+
+  const onExportBackup = async () => {
+    const bytes = await exportAll();
+    downloadBytes(bytes, 'dsh-backup-' + new Date().toISOString().slice(0, 10) + '.json', 'application/json');
+    showToast('备份已导出');
+  };
+
+  const onImportBackup = async (file: File) => {
+    try {
+      const bytes = await readFileBytes(file);
+      await importAll(bytes);
+      await refresh();
+      await reloadCard();
+      showToast('备份已导入');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const onSavePreset = async () => {
@@ -296,6 +349,113 @@ export default function SettingsScreen() {
             </label>
             <button type="button" onClick={() => void onSaveGlobal()}
               className="w-full rounded-xl bg-[#0072E3] py-2 text-[13px] font-medium text-white">保存全局配置</button>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="mb-2 text-[13px] font-semibold text-slate-600">阅读设置</h2>
+          <div className="rounded-2xl border border-black/10 bg-white p-3">
+            <div className="mb-1 text-[12px] text-slate-500">正文字号</div>
+            <div className="flex gap-2">
+              {[['14', '小'], ['16', '中'], ['18', '大'], ['20', '特大']].map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setFontScale(v)}
+                  className={
+                    'flex-1 rounded-xl py-2 text-[12px] ' +
+                    (fontScale === v ? 'bg-[#0072E3] text-white' : 'border border-black/10 text-slate-500')
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-[13px] font-semibold text-slate-600">全局正则脚本</h2>
+            <button type="button" className="text-[12px] text-[#0072E3]" onClick={() => void addGlobalRule()}>
+              + 新增规则
+            </button>
+          </div>
+          {globalRules.map((r) => (
+            <div key={r.id} className="mb-2 rounded-2xl border border-black/10 bg-white p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <input
+                  className="text-[12px] font-medium text-slate-600 outline-none"
+                  value={r.name}
+                  onChange={(e) => void patchGlobalRule(r.id, { name: e.target.value })}
+                />
+                <button type="button" className="text-[12px] text-red-500" onClick={() => void removeGlobalRule(r.id)}>
+                  删除
+                </button>
+              </div>
+              <input
+                className={inputClass}
+                placeholder="匹配规则（正则内容本身，不写 /.../g）"
+                value={r.pattern}
+                onChange={(e) => void patchGlobalRule(r.id, { pattern: e.target.value })}
+              />
+              <input
+                className={inputClass + ' mt-2'}
+                placeholder="替换文本（支持 $1 $2 与 HTML，留空为删除）"
+                value={r.replacement}
+                onChange={(e) => void patchGlobalRule(r.id, { replacement: e.target.value })}
+              />
+              <div className="mt-2 flex items-center gap-3 text-[12px] text-slate-500">
+                <label className="flex items-center gap-1">
+                  修饰符
+                  <input
+                    className="w-16 rounded-lg border border-black/10 px-1 py-0.5"
+                    value={r.flags}
+                    onChange={(e) => void patchGlobalRule(r.id, { flags: e.target.value })}
+                  />
+                </label>
+                <label className="flex items-center gap-1">
+                  <input type="checkbox" checked={r.enabled} onChange={(e) => void patchGlobalRule(r.id, { enabled: e.target.checked })} />
+                  启用
+                </label>
+              </div>
+            </div>
+          ))}
+          {globalRules.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-black/15 py-4 text-center text-[12px] text-slate-400">
+              还没有全局正则规则
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h2 className="mb-2 text-[13px] font-semibold text-slate-600">数据管理</h2>
+          <div className="space-y-2 rounded-2xl border border-black/10 bg-white p-3">
+            <div className="text-[12px] text-slate-500">
+              数据全部存在本机浏览器里。换设备或清理浏览器前，请先导出备份。
+            </div>
+            <button type="button" onClick={() => void onExportBackup()}
+              className="w-full rounded-xl bg-[#0072E3] py-2 text-[13px] font-medium text-white">
+              导出全部数据
+            </button>
+            <button type="button" onClick={() => backupRef.current?.click()}
+              className="w-full rounded-xl border border-black/10 py-2 text-[13px] text-slate-600">
+              导入备份
+            </button>
+            <input
+              ref={backupRef}
+              type="file"
+              accept=".json,.dshbackup"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (file) void onImportBackup(file);
+              }}
+            />
+            <div className="text-[11px] text-slate-400">
+              当前共 {chatsCount} 个会话 · 卡片与设置一并导出
+            </div>
           </div>
         </section>
       </main>

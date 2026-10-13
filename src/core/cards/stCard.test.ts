@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { crc32, decodeCardText, encodeCardText, exportStPng, importStPng, readPngTextChunks, writePngTextChunks } from './stCard';
-import { emptyCardJson } from './spec';
 import type { CardPackage } from './package';
 
 function buildBlankPng(): Uint8Array {

@@ -1,5 +1,6 @@
 import { extractAll, type ExtractedMemory } from './extract';
 import { sanitizeHtml } from './sanitize';
+import { applyRegexRules, type RegexRule } from '../cards/regex';
 
 export type RenderBlock =
   | { kind: 'collapse'; summary: string; html: string }
@@ -13,9 +14,10 @@ export interface RenderResult {
   memories: ExtractedMemory[];
 }
 
-export function renderMessage(raw: string): RenderResult {
+export function renderMessage(raw: string, opts: { rules?: RegexRule[] } = {}): RenderResult {
   const { think, body, memories, options } = extractAll(raw);
-  const safe = sanitizeHtml(body);
+  const ruled = opts.rules && opts.rules.length > 0 ? applyRegexRules(body, opts.rules) : body;
+  const safe = sanitizeHtml(ruled);
   const doc = new DOMParser().parseFromString('<div id="root">' + safe + '</div>', 'text/html');
   const root = doc.getElementById('root');
   const blocks: RenderBlock[] = [];

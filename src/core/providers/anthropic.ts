@@ -1,5 +1,5 @@
 import { parseSSE } from './sse';
-import type { ChatMessage, ChatRequest, ProviderAdapter, ProviderConfig, StreamEvent } from './types';
+import type { ChatRequest, ProviderAdapter, StreamEvent } from './types';
 import type { ModelCapability } from '../storage/types';
 
 export const ANTHROPIC_CAPABILITY: ModelCapability = {
