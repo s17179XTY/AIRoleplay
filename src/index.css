@@ -46,6 +46,20 @@ body {
   background: var(--dsh-bg);
 }
 
+/*
+ * 宽萤幕（>= 480px）才把外壳收成手机宽度并置中——手机上仍然铺满。
+ * 这不是「桌面多栏」，是把手机画面摆在中间：两侧用稍暗的底色衬托出来。
+ * 门坎选 480px 是因为常见手机直向都 <= 430px，这样手机永远走基础规则。
+ */
+@media (min-width: 480px) {
+  body { background: #e9edf3; }
+  .dsh-shell {
+    max-width: 430px;
+    margin-inline: auto;
+    box-shadow: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 18px 50px rgba(16, 24, 40, 0.12);
+  }
+}
+
 .dsh-card {
   background: #fff;
   border-radius: 18px;
