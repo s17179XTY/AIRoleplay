@@ -16,7 +16,7 @@
 
 ## 部署到 Cloudflare Pages
 
-**线上地址：https://air-roleplay.pages.dev**（Cloudflare 帐号与资源 id 见本机 `wrangler whoami` 与 `worker/wrangler.jsonc`；Pages 项目 `air-roleplay`，Direct Upload 方式）
+**线上地址**：[air-roleplay.pages.dev](https://air-roleplay.pages.dev)（Cloudflare 帐号与资源 id 见本机 `wrangler whoami` 与 `worker/wrangler.jsonc`；Pages 项目 `air-roleplay`，Direct Upload 方式）
 
 纯静态站点，没有 Functions、没有服务端依赖，构建产物就是 `dist/`。仓库里已经放好 Pages 需要的三个文件：
 
@@ -36,7 +36,7 @@
 
 ### 方式二：本地 wrangler 直接上传（不接 Git，手动发布）—— **本项目当前用的就是这条**
 
-线上地址：**https://air-roleplay.pages.dev**（Pages 项目 `air-roleplay`，Direct Upload；`wrangler pages project list` 可见）
+线上地址：[air-roleplay.pages.dev](https://air-roleplay.pages.dev)（Pages 项目 `air-roleplay`，Direct Upload；`wrangler pages project list` 可见）
 
     npm install
     npm run build
@@ -77,8 +77,9 @@ KV 含在 Workers 免费方案内（1 GB/账号、单值 25 MiB、写入 1000 �
 ## 账号与同步（核心已就绪）
 
 账号、邀请码、零知识加密与同步引擎在 `src/core/sync/`，后端是独立的 Cloudflare Worker（`worker/`）。
-设计文档与里程碑见 `docs/superpowers/specs/2026-10-14-account-sync-design.md`，
-逐步实施计划见 `docs/superpowers/plans/2026-10-14-account-sync-core.md`。
+
+- 设计文档：[账号与云同步（零知识加密）设计](docs/superpowers/specs/2026-10-14-account-sync-design.md)
+- 实施计划：[核心（M1–M3）](docs/superpowers/plans/2026-10-14-account-sync-core.md) · [界面与 blob（M4–M7）](docs/superpowers/plans/2026-10-14-account-sync-ui-and-blobs.md)
 
     npm run test -- src/core/sync                    # 只跑同步核心（含两装置整合测试）
     npm run worker:dev                               # 本机起 Worker（需先 npm run d1:migrate:local）
