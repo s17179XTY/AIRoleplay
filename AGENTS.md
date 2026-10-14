@@ -65,7 +65,7 @@
 
     npm run d1:migrate:local                      # 建本机 D1（在 .wrangler/state，已 gitignore）
     npm run worker:dev                            # 本机起 Worker（http://127.0.0.1:8787）
-    node worker/smoke.mjs                         # 对 wrangler dev 打一轮端到端冒烟（26 项）
+    node worker/smoke.mjs                         # 对 wrangler dev 打一轮端到端冒烟（31 项）
     node worker/scripts/mint-invite.mjs "给 alice" # 产生一次性邀请码
     npm run worker:deploy / d1:migrate:remote      # 上线用（blob 存储用 KV，不需要付费开 R2）
 

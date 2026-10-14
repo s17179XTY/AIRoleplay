@@ -193,5 +193,18 @@ check(
   `count=${devices.body.devices?.length}`,
 );
 
+// 刪除帳號放在最後：它會把這個冒煙帳號的雲端資料整份清掉（也順手清乾淨測試殘留）
+const noAuthDelete = await call('/api/account', { method: 'DELETE' });
+check('刪除帳號：未帶 token 被拒', noAuthDelete.status === 401);
+
+const deleted = await call('/api/account', { method: 'DELETE', token: rescuedLogin.body.accessToken });
+check('刪除帳號：成功', deleted.status === 200 && deleted.body.deleted === true, `status=${deleted.status}`);
+
+const afterDelete = await call('/api/me', { token: rescuedLogin.body.accessToken });
+check('刪除帳號後舊 token 立刻失效', afterDelete.status === 401);
+
+const reloginDeleted = await call('/api/auth/login', { method: 'POST', body: { username: USER, authKey: 'smoke-auth-key-3' } });
+check('刪除帳號後同一個名字登不進去', reloginDeleted.status === 401 || reloginDeleted.status === 404);
+
 console.log(failures === 0 ? '\n冒煙測試全部通過。' : `\n有 ${failures} 項失敗。`);
 process.exit(failures === 0 ? 0 : 1);

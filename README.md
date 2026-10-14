@@ -120,10 +120,11 @@ KV 含在 Workers 免费方案内（1 GB/账号、单值 25 MiB、写入 1000 �
 M4（blob/KV 传输、素材与 >256 KiB 的卡片互动页）+ M5（设置页账号 UI：注册/登录/解锁/同步状态/冲突/配额/装置管理）+
 M6（改密码、恢复码救援）+ M7（线上部署与验证）**全部完成**。
 
-- 后端已部署：Cloudflare Worker `dsh-sync-api`（D1 `dsh-sync` + KV `dsh-blobs`），26 项冒烟对**正式环境**全过。
+- 后端已部署：Cloudflare Worker `dsh-sync-api`（D1 `dsh-sync` + KV `dsh-blobs`），31 项冒烟对**正式环境**全过（含删除账号）。
 - 前端已部署：`https://air-roleplay.pages.dev`，注册 → 恢复码 → 同步已在真实浏览器实测通过。
 - 端到端测试：`src/core/sync/integration.test.ts`（两装置一致、秘密不外流、离线补推）、
-  `src/core/sync/recovery.test.ts`（改密码、忘密码用恢复码救回）。
+  `src/core/sync/recovery.test.ts`（改密码、忘密码用恢复码救回）、`worker/test/account.test.ts`（删除账号）。
+- 浏览器验收探针：`node scripts/cdp-ui-check.mjs <port> <url>`，真实点按 + 截图 + 检查 console 无警告。
 
 ## 已实现
 
