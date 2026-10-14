@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { SYNC_TABLES, LOCAL_ONLY_TABLES, keyOf, sanitizeForSync, stripLocalFields, isBlobKind } from './kinds';
+import {
+  SYNC_TABLES, LOCAL_ONLY_TABLES, keyOf, sanitizeForSync, stripLocalFields, isBlobKind, type SyncKind,
+} from './kinds';
 
 describe('kinds', () => {
   it('14 種 kind 都有對應表，且本地專用表不在其中', () => {
@@ -15,6 +17,25 @@ describe('kinds', () => {
 
   it('單主鍵的表直接用 row.id', () => {
     expect(keyOf('chat', { id: 'chat_1' })).toBe('chat_1');
+  });
+
+  it('settings 的主鍵是 key 不是 id（唯一例外的表）', () => {
+    expect(keyOf('setting', { key: 'fontSize', value: '18' })).toBe('fontSize');
+  });
+
+  it('每一種 kind 都能對自己的真實列形狀算出非 "undefined" 的 id', () => {
+    const rows: Record<SyncKind, Record<string, unknown>> = {
+      card: { id: 'x' }, cardFile: { cardId: 'c', path: 'ui/index.html' },
+      chat: { id: 'x' }, message: { id: 'x' }, memory: { id: 'x' },
+      worldbook: { id: 'x' }, worldbookEntry: { id: 'x' }, regexScript: { id: 'x' },
+      config: { id: 'x' }, cardUiState: { cardId: 'c', key: 'xp' }, setting: { key: 'k' },
+      provider: { id: 'x' }, modelPreset: { id: 'x' }, assetMeta: { id: 'x' },
+    };
+    for (const [kind, row] of Object.entries(rows)) {
+      const id = keyOf(kind as SyncKind, row);
+      expect(id, `${kind} 的 id 不該是 undefined`).not.toContain('undefined');
+      expect(id.length).toBeGreaterThan(0);
+    }
   });
 
   it('provider 剝掉 apiKey 與 extraHeaders（秘密永不上雲）', () => {

@@ -30,6 +30,8 @@ export function isBlobKind(kind: SyncKind): boolean {
 export function keyOf(kind: SyncKind, row: Record<string, unknown>): string {
   if (kind === 'cardFile') return `${String(row.cardId)}:${String(row.path)}`;
   if (kind === 'cardUiState') return `${String(row.cardId)}:${String(row.key)}`;
+  // settings 是 14 張表裡唯一主鍵叫 key 而不是 id 的（見 storage/db.ts 的 schema）
+  if (kind === 'setting') return String(row.key);
   return String(row.id);
 }
 

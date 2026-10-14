@@ -4227,6 +4227,30 @@ git commit -m "test(worker): 對真實 wrangler dev 的端到端冒煙腳本"
 
 ---
 
+## 執行期間修正（M1，Task 1–6 實作時發現）
+
+計畫裡的程式碼片段有幾處在真實環境行不通，實作時已修正。**計畫二的實作者請以這一節為準**：
+
+1. **Dexie 的 dbcore middleware 必須在 `db.open()` 之前安裝**（實測結論，非文件記載）：
+   - open 前 `use()` → 攔得到寫入 ✅
+   - open 後 `use()` → 完全攔不到 ❌（連把 `_core` 設成 null 都無效）
+   - 已開的庫只能靠「`close()` → `use()` → `open()`」重建堆疊 ✅
+   - 因此 `db.ts` 多了 `onDatabaseCreated(hook)`：新實例在**建立時、還沒 open** 就掛好收斂點；
+     `installSyncTap` 改成 async，遇到已開啟的庫會 close → 安裝 → 重開。
+2. **IndexedDB 的交易範圍在建立時就固定**：`db.settings.put()` 的自動交易只含 `settings`，
+   middleware 想在裡面補寫 `syncOutbox` 會噴 `NotFoundError`。修法是在 `db.ts` 的 `createDb` 裡
+   包一層 `_createTransaction`（Dexie 的實例屬性，自動交易與顯式交易都經過它），把 `syncOutbox`
+   併進每個讀寫交易的 store 範圍；`outbox.ts` 另留 `Dexie.ignoreTransaction` 的 fallback。
+3. **`keyOf` 漏了一張表**：`settings` 的主鍵是 `key` 不是 `id`（14 張表裡唯一的例外），
+   原本一律讀 `row.id` 會產生字串 `"undefined"`——同一筆的 put 與 delete 會被當成兩筆，
+   同一筆寫兩次又會被 `[kind+id]` 去重成一筆。已修，並補上「14 種 kind 都算得出非 undefined id」的測試。
+4. **`Uint8Array<ArrayBuffer>`**：TS 5.7 的泛型化讓裸寫的 `Uint8Array` 傳不進 WebCrypto 的
+   `BufferSource`，vitest 抓不到、只有 `npm run build` 會噴。已列入 Global Constraints。
+5. **恢復碼正規化的測試自相矛盾**：同一條測試同時要求「保留 I/L」與「I→1、L→1」。以
+   「產生時不含 I/L/O/U、手抄時收斂」為準修正測試（實作本來就是對的）。
+6. **不要用 PowerShell 改檔案**：`Get-Content -Raw | Set-Content` 會把中文註解變成亂碼並吃掉換行
+   （這次真的踩到，`outbox.ts` 整份重寫才救回來）。一律用 read / edit / write 工具。
+
 ## 計畫完成後的狀態
 
 - 可以註冊（邀請碼）、登入、refresh、登出；session 可即時撤銷。
