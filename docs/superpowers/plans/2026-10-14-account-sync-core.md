@@ -23,6 +23,7 @@
 - **秘密永不上雲**：`providers.apiKey` 與 `providers.extraHeaders` 不進任何上行 payload。
 - **`src/core/` 四個內核不得 import React**；`src/ui/` 不得出現提示詞拼接與 HTML 解析。新增的 `src/core/sync/` 同屬內核，一樣不得 import React。
 - **`messages.raw` 一旦落庫永不修改**：同步只做整筆 upsert，不得就地改寫 `raw`。
+- **`Uint8Array` 的泛型要寫清楚**：TS 5.7 起 `Uint8Array` 對 buffer 泛型化，裸寫的 `Uint8Array` 等於 `Uint8Array<ArrayBufferLike>`，**傳不進 WebCrypto 的 `BufferSource`**（噴 TS2769／TS2322，而且 vitest 不會抓到，只有 `npm run build` 會）。所有會餵給 `crypto.subtle.*` 的位元組，回傳型別一律標 `Uint8Array<ArrayBuffer>`。
 - **`crypto.ts`/`kdf.ts`/`envelope.ts`/`blob.ts` 不得讀模組層可變常數決定迭代數**：KDF 參數一律由呼叫端傳入（測試才能注入 1000 迭代）。
 - **不得新增 runtime 依賴**（`dependencies` 不變）。唯一允許新增的是 devDependency `@types/node`。
 - **不使用 `@cloudflare/vitest-pool-workers`**：Worker 的 D1 介面在測試中由 `worker/test/helpers/d1.ts`（`node:sqlite`）代替。
