@@ -36,7 +36,7 @@ describe('全量备份', () => {
     expect(assets).toHaveLength(1);
     expect(assets[0].bytes.byteLength).toBeGreaterThan(0);
     const file = await db.cardFiles.get([cardId, 'ui/index.html']);
-    expect(file?.text).toContain('data-dsh-field');
+    expect(file?.text).toContain('generated-content-preview');
   });
 
   it('拒绝非本应用备份', async () => {

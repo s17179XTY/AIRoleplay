@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CardRecord } from '../../core/storage/types';
-import { deleteCard, listCards, loadCardPackage, saveCardPackage } from '../../core/storage/cardRepo';
+import { deleteCard, ensureSeedCard, listCards, loadCardPackage, saveCardPackage } from '../../core/storage/cardRepo';
 import { packCard, unpackCard } from '../../core/cards/package';
 import { importStPng } from '../../core/cards/stCard';
 import { emptyCardJson } from '../../core/cards/spec';
@@ -15,11 +15,16 @@ export default function CardListScreen() {
   const openCard = useSession((s) => s.openCard);
   const setTab = useNav((s) => s.setTab);
   const openEditor = useNav((s) => s.openEditor);
-  const openCardUi = useNav((s) => s.openCardUi);
   const showToast = useNav((s) => s.showToast);
 
   const refresh = useCallback(async () => {
-    setCards(await listCards());
+    let list = await listCards();
+    if (list.length === 0) {
+      // 首次打开：先把内置卡种下去，任何入口进来都不会看到空列表
+      await ensureSeedCard();
+      list = await listCards();
+    }
+    setCards(list);
   }, []);
 
   useEffect(() => {
@@ -66,11 +71,6 @@ export default function CardListScreen() {
   };
 
   const onPlay = async (cardId: string) => {
-    const pkg = await loadCardPackage(cardId);
-    if (pkg?.json.ui?.entry) {
-      openCardUi(cardId);
-      return;
-    }
     await openCard(cardId);
     setTab('play');
   };

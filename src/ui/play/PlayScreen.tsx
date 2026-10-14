@@ -4,6 +4,7 @@ import { useSetting } from '../../state/useSetting';
 import { db } from '../../core/storage/db';
 import type { ChatRecord } from '../../core/storage/types';
 import MessageBubble from './MessageBubble';
+import CardPagePanel from './CardPagePanel';
 import Composer from './Composer';
 
 function copyText(text: string): void {
@@ -20,6 +21,7 @@ export default function PlayScreen() {
   const streaming = useSession((s) => s.streaming);
   const error = useSession((s) => s.error);
   const regexRules = useSession((s) => s.regexRules);
+  const cardUiHtml = useSession((s) => s.cardUiHtml);
   const memories = useSession((s) => s.memories);
   const init = useSession((s) => s.init);
   const send = useSession((s) => s.send);
@@ -79,6 +81,7 @@ export default function PlayScreen() {
       </header>
 
       <main className="flex-1 overflow-y-auto py-2" style={{ fontSize: Number(fontScale) || 16 }}>
+        {cardUiHtml && <CardPagePanel html={cardUiHtml} title={cardName} />}
         {ready &&
           messages.map((m) => (
             <MessageBubble

@@ -1,8 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { renderTemplate, type TemplateContext } from './template';
 import { buildSrcdoc, collectFields } from './sandbox';
-import { seedPackage } from '../storage/seedPackage';
 
+const FIXTURE_UI = [
+  '<h2>XP 偏好选择</h2>',
+  '<label><input type="checkbox" data-dsh-field="xp" data-dsh-type="checkbox" data-dsh-value="A01" data-dsh-label="校园日常">校园日常</label>',
+  '<label><input type="checkbox" data-dsh-field="xp" data-dsh-type="checkbox" data-dsh-value="B02" data-dsh-label="读心能力">读心能力</label>',
+  '<label>姓名<input type="text" data-dsh-field="userName" data-dsh-type="text"></label>',
+  '<label>性别<input type="text" data-dsh-field="gender" data-dsh-type="text" value="女"></label>',
+  '<label>其他<textarea data-dsh-field="extra" data-dsh-type="textarea">特殊能力</textarea></label>',
+].join('\n');
+
+const FIXTURE_TEMPLATE = [
+  '【初始信息设定】',
+  '{{?xp}}用户选择的偏好：{{f:xp}}{{/xp}}',
+  '{{?userName}}姓名：{{f:userName}}{{/userName}}',
+  '{{?gender}}性别：{{f:gender}}{{/gender}}',
+  '{{?extra}}其他：{{f:extra}}{{/extra}}',
+].join('\n');
 const ctx: TemplateContext = {
   fields: {
     xp: { values: ['A01', 'B02'], labels: ['校园日常', '读心能力'] },
@@ -42,37 +57,28 @@ describe('提示词模板引擎', () => {
 });
 
 describe('沙箱与字段收集', () => {
-  it('从演示卡界面里收集勾选项与文本输入', () => {
-    const pkg = seedPackage();
-    const html = pkg.texts.find((t) => t.path === 'ui/index.html')!.text;
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const checks = doc.querySelectorAll('input[type=checkbox]');
-    (checks[0] as HTMLInputElement).checked = true;
-    const text = doc.querySelector('input[data-dsh-field=userName]') as HTMLInputElement;
-    text.value = '阿离';
+  it('收集勾选项与文本输入，并渲染进模板', () => {
+    const doc = new DOMParser().parseFromString(FIXTURE_UI, 'text/html');
+    (doc.querySelector('input[data-dsh-value=A01]') as HTMLInputElement).checked = true;
+    (doc.querySelector('input[data-dsh-field=userName]') as HTMLInputElement).value = '阿离';
     const fields = collectFields(doc);
     expect(fields.xp.labels).toEqual(['校园日常']);
     expect(fields.xp.values).toEqual(['A01']);
     expect(fields.userName.values).toEqual(['阿离']);
-
-    // 勾选的 XP 必须真的进入生成的提示词
-    const tpl = pkg.texts.find((t) => t.path === 'prompt.template.md')!.text;
-    const out = renderTemplate(tpl, { fields, scenario: '', persona: '', cardName: '卡', user: '我', date: '2026-10-13', time: '10:00' });
+    const out = renderTemplate(FIXTURE_TEMPLATE, { fields, scenario: '', persona: '', cardName: '卡', user: '我', date: '2026-10-13', time: '10:00' });
     expect(out).toContain('用户选择的偏好：校园日常');
+    expect(out).toContain('姓名：阿离');
   });
 
   it('文本框的显示名就是用户输入的值，而不是外层 label 文案', () => {
-    const pkg = seedPackage();
-    const html = pkg.texts.find((t) => t.path === 'ui/index.html')!.text;
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const doc = new DOMParser().parseFromString(FIXTURE_UI, 'text/html');
     const gender = doc.querySelector('input[data-dsh-field=gender]') as HTMLInputElement;
     const extra = doc.querySelector('textarea[data-dsh-field=extra]') as HTMLTextAreaElement;
     const fields = collectFields(doc);
     expect(fields.gender.labels).toEqual([gender.value]);
     expect(fields.extra.labels[0]).toBe(extra.value);
-    const tpl = pkg.texts.find((t) => t.path === 'prompt.template.md')!.text;
-    const out = renderTemplate(tpl, { fields, scenario: '', persona: '', cardName: '卡', user: '我', date: '2026-10-13', time: '10:00' });
-    expect(out).toContain('性别：' + gender.value);
+    const out = renderTemplate(FIXTURE_TEMPLATE, { fields, scenario: '', persona: '', cardName: '卡', user: '我', date: '2026-10-13', time: '10:00' });
+    expect(out).toContain('性别：女');
     expect(out).not.toContain('性别：性别');
   });
 

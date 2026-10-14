@@ -8,7 +8,7 @@ describe('卡片草稿', () => {
     const base = seedPackage();
     const draft = packageToDraft(base);
     expect(draft.worldbook.length).toBeGreaterThan(0);
-    expect(draft.uiHtml).toContain('data-dsh-field');
+    expect(draft.uiHtml).toContain('generated-content-preview');
     draft.worldbook.push(newWorldbookEntry(99));
     draft.regex.push(newRegexScript(0));
     draft.json.prompts.pre = '改过的前置词';
@@ -17,7 +17,7 @@ describe('卡片草稿', () => {
     expect(reread.json.prompts.pre).toBe('改过的前置词');
     expect(reread.worldbook).toHaveLength(draft.worldbook.length);
     expect(reread.regex).toHaveLength(1);
-    expect(reread.uiHtml).toContain('data-dsh-field');
+    expect(reread.uiHtml).toContain('generated-content-preview');
   });
 
   it('清空世界书时不再写出 worldbook.json', () => {

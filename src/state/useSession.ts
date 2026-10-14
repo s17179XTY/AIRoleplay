@@ -6,6 +6,7 @@ import { assemble } from '../core/assembler/assemble';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import type { ProviderAdapter } from '../core/providers/types';
 import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
+import { findText } from '../core/cards/package';
 import { getActive } from '../core/storage/providerRepo';
 import { displayRules, loadRulesForChat, promptRules } from '../core/storage/regexRepo';
 import { applyRegexRules, stripMemoryAndThink, type RegexRule } from '../core/cards/regex';
@@ -28,6 +29,7 @@ export interface SessionState {
   card: CardPackage | null;
   modelLabel: string;
   regexRules: RegexRule[];
+  cardUiHtml: string | null;
   memoryCount: number;
   memories: MemoryRecord[];
   openChat: (chatId: string) => Promise<void>;
@@ -82,6 +84,7 @@ export const useSession = create<SessionState>((set, get) => ({
   card: null,
   modelLabel: 'mock 模拟模型',
   regexRules: [],
+  cardUiHtml: null,
   memoryCount: 0,
   memories: [],
   chatId: null,
@@ -142,6 +145,7 @@ export const useSession = create<SessionState>((set, get) => ({
       chatId: chat.id,
       messages: await pathToLeaf(chat.id, chat.currentLeafId),
       regexRules: displayRules(rules),
+      cardUiHtml: card.json.ui?.entry ? findText(card, card.json.ui.entry) ?? null : null,
       memoryCount: memories.length,
       memories,
       error: null,
@@ -297,7 +301,9 @@ export const useSession = create<SessionState>((set, get) => ({
     set({
       ready: true, cardId: chat.cardId, card, cardName: card.json.name, chatId,
       messages: await pathToLeaf(chatId, chat.currentLeafId),
-      regexRules: displayRules(rules), memories: await listMemories(chatId),
+      regexRules: displayRules(rules),
+      cardUiHtml: card.json.ui?.entry ? findText(card, card.json.ui.entry) ?? null : null,
+      memories: await listMemories(chatId),
       memoryCount: (await listMemories(chatId)).length,
       draft: '', streaming: false, error: null,
     });

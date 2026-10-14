@@ -78,7 +78,7 @@ describe('卡片仓库', () => {
     expect(id).toBe(DEMO_CARD_ID);
     const repaired = await loadCardPackage(id);
     expect(repaired).not.toBeNull();
-    expect(repaired!.texts.find((t) => t.path === 'ui/index.html')?.text).toContain('data-dsh-field');
+    expect(repaired!.texts.find((t) => t.path === 'ui/index.html')?.text).toContain('generated-content-preview');
   });
 
   it('删除卡片会清掉文件与素材', async () => {

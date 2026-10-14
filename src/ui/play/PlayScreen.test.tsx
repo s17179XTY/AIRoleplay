@@ -18,8 +18,9 @@ beforeEach(async () => {
 describe('游玩页', () => {
   it('渲染开场白并可发送一条消息，回复中出现可点选项', async () => {
     render(<PlayScreen />);
-    await waitFor(() => expect(screen.getByText(/寻找新XP/)).toBeTruthy());
-    expect(screen.getByText(/状况/)).toBeTruthy();
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    expect(screen.getByText(/卡片互动页/)).toBeTruthy();
+    expect(screen.getAllByText(/寻找新XP/).length).toBeGreaterThan(0);
     const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
     fireEvent.change(box, { target: { value: '你好' } });
     fireEvent.click(screen.getByText('发送'));
@@ -28,7 +29,7 @@ describe('游玩页', () => {
 
   it('点选项会把选项文本作为下一轮输入发出', async () => {
     render(<PlayScreen />);
-    await waitFor(() => expect(screen.getByText(/寻找新XP/)).toBeTruthy());
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
     const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
     fireEvent.change(box, { target: { value: '你好' } });
     fireEvent.click(screen.getByText('发送'));

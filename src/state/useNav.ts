@@ -13,13 +13,10 @@ function tabFromHash(): Tab {
 export interface NavState {
   tab: Tab;
   editingCardId: string | null;
-  uiCardId: string | null;
   toast: string | null;
   setTab: (tab: Tab) => void;
   openEditor: (cardId: string) => void;
   closeEditor: () => void;
-  openCardUi: (cardId: string) => void;
-  closeCardUi: () => void;
   showToast: (text: string) => void;
 }
 
@@ -32,16 +29,13 @@ function syncHash(tab: Tab): void {
 export const useNav = create<NavState>((set) => ({
   tab: tabFromHash(),
   editingCardId: null,
-  uiCardId: null,
   toast: null,
   setTab: (tab) => {
     syncHash(tab);
-    set({ tab, editingCardId: null, uiCardId: null });
+    set({ tab, editingCardId: null });
   },
-  openEditor: (cardId) => set({ editingCardId: cardId, uiCardId: null, tab: 'cards' }),
+  openEditor: (cardId) => set({ editingCardId: cardId, tab: 'cards' }),
   closeEditor: () => set({ editingCardId: null }),
-  openCardUi: (cardId) => set({ uiCardId: cardId, editingCardId: null, tab: 'cards' }),
-  closeCardUi: () => set({ uiCardId: null }),
   showToast: (text) => {
     set({ toast: text });
     setTimeout(() => set({ toast: null }), 2500);
@@ -53,7 +47,7 @@ if (typeof globalThis.addEventListener === 'function') {
   globalThis.addEventListener('hashchange', () => {
     const next = tabFromHash();
     if (useNav.getState().tab !== next) {
-      useNav.setState({ tab: next, editingCardId: null, uiCardId: null });
+      useNav.setState({ tab: next, editingCardId: null });
     }
   });
 }

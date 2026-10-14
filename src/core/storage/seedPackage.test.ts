@@ -8,7 +8,7 @@ describe('演示卡包', () => {
     const pkg = seedPackage();
     const back = unpackCard(packCard(pkg));
     expect(back.json.name).toContain('寻找新XP');
-    expect(back.texts.map((t) => t.path).sort()).toEqual(['prompt.template.md', 'ui/index.html', 'worldbook.json']);
+    expect(back.texts.map((t) => t.path).sort()).toEqual(['ui/index.html', 'worldbook.json']);
     expect(back.assets).toHaveLength(1);
   });
 
@@ -16,7 +16,6 @@ describe('演示卡包', () => {
     const pkg = seedPackage();
     const entries = parseWorldbookFile(pkg.texts.find((t) => t.path === 'worldbook.json')!.text);
     expect(entries.length).toBeGreaterThan(0);
-    expect(pkg.texts.find((t) => t.path === 'ui/index.html')!.text).toContain('data-dsh-field');
-    expect(pkg.texts.find((t) => t.path === 'prompt.template.md')!.text).toContain('【初始信息设定】');
+    expect(pkg.texts.find((t) => t.path === 'ui/index.html')!.text).toContain('generated-content-preview');
   });
 });
