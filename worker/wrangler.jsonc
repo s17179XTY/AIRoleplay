@@ -1,0 +1,17 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "dsh-sync-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-14",
+  "migrations_dir": "migrations",
+  "vars": {
+    "ALLOWED_ORIGINS": "https://air-roleplay.pages.dev"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "dsh-sync", "database_id": "611a1696-fcb8-4dda-a5c6-aac0f0b6356f" }
+  ],
+  "r2_buckets": [
+    { "binding": "BLOBS", "bucket_name": "dsh-sync-blobs" }
+  ],
+  "observability": { "enabled": true }
+}

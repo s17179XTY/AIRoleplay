@@ -15,6 +15,6 @@ export default defineConfig({
     environment: 'jsdom',
     css: true, // 让测试能读到编译后的 CSS，用于布局约束的回归检查
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'worker/**/*.test.ts'],
   },
 });
