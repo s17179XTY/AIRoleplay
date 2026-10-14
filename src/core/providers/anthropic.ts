@@ -1,5 +1,5 @@
 import { parseSSE } from './sse';
-import type { ChatRequest, ProviderAdapter, StreamEvent } from './types';
+import { isAbortError, type ChatRequest, type ProviderAdapter, type StreamEvent } from './types';
 import type { ModelCapability } from '../storage/types';
 
 export const ANTHROPIC_CAPABILITY: ModelCapability = {
@@ -112,8 +112,13 @@ export const anthropicAdapter: ProviderAdapter = {
           ...cfg.extraHeaders,
         },
         body: JSON.stringify(toAnthropicPayload(req)),
+        signal: req.signal,
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        yield { type: 'done', finishReason: 'aborted' };
+        return;
+      }
       yield { type: 'error', message: '请求失败：' + (err instanceof Error ? err.message : String(err)) };
       return;
     }
@@ -123,6 +128,7 @@ export const anthropicAdapter: ProviderAdapter = {
       return;
     }
     for await (const ev of parseSSE(res.body)) {
+      if (req.signal?.aborted) break;
       if (!ev.data) continue;
       try {
         const json = JSON.parse(ev.data) as {

@@ -4,14 +4,17 @@ import { seedPackage } from './seedPackage';
 import { assemble } from '../assembler/assemble';
 
 describe('内置卡', () => {
-  it('保留卡片自身的提示词与世界书，不再有静态的主公设/前情提要/开场白', () => {
+  it('保留卡片自身的提示词，不再有静态的主公设/前情提要/开场白', () => {
     const c = seedDemoCard();
     expect(c.record.spec).toBe('dsh-card/1');
     expect(c.prompts.pre).toContain('医疗叙事研究协议');
     expect(c.prompts.prompt).toContain('回复正文约束');
     expect(c.prompts.prompt).toContain('XP书写指导');
-    expect(c.memory.recentLimit).toBe(4);
-    expect(c.worldbook.length).toBeGreaterThan(0);
+    // 記憶條數預設 6（使用者明確要求），提示詞裡的說明也要對得上
+    expect(c.memory.recentLimit).toBe(6);
+    expect(c.prompts.prompt).toContain('最大 6 条');
+    // 內置卡的世界書是空的：世界觀由互動頁的【初始信息设定】決定（使用者明確要求）
+    expect(c.worldbook).toHaveLength(0);
     const pkg = seedPackage();
     expect(pkg.json.persona.intro).toBe('');
     expect(pkg.json.scenario).toBe('');

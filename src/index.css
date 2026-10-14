@@ -103,6 +103,31 @@ body {
 }
 .dsh-btn:active { transform: translateY(1px) scale(0.99); }
 .dsh-btn:disabled { opacity: 0.45; box-shadow: none; }
+
+/* 生成中出現的「停止」：白底紅框，不要跟主要按鈕搶戲 */
+.composer-stop {
+  background: #fff;
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  color: #ef4444;
+  transition: transform 0.12s ease;
+}
+.composer-stop:active { transform: translateY(1px) scale(0.99); }
+
+/* 等待模型吐字時的呼吸點 */
+@keyframes dsh-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+.dsh-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--dsh-blue);
+  animation: dsh-dot 1.2s infinite ease-in-out;
+}
+.dsh-dot:nth-child(2) { animation-delay: 0.15s; }
+.dsh-dot:nth-child(3) { animation-delay: 0.3s; }
 .dsh-btn-ghost {
   display: inline-flex;
   align-items: center;

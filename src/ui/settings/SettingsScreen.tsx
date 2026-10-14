@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { db } from '../../core/storage/db';
 import type { ModelCapability, ModelParams, ModelPresetRecord, ProviderRecord, RegexScriptRecord } from '../../core/storage/types';
-import { DEFAULT_CAPABILITY, DEFAULT_PARAMS } from '../../core/storage/types';
+import { DEFAULT_CAPABILITY, DEFAULT_MEMORY_LIMIT, DEFAULT_PARAMS } from '../../core/storage/types';
 import {
   deletePreset, deleteProvider, getActive, listPresets, listProviders,
   savePreset, saveProvider, setActive, testConnection,
 } from '../../core/storage/providerRepo';
 import { defaultCapabilityFor } from '../../core/providers/registry';
 import { exportAll, importAll } from '../../core/storage/backup';
+import { clearLocalData, resetDefaultCards, resetSettings } from '../../core/storage/reset';
 import { downloadBytes, readFileBytes } from '../cards/fileUtils';
 import { newRegexScript } from '../cards/draft';
-import { useSetting } from '../../state/useSetting';
+import { resetSettingCache, useSetting, useSettingFlag } from '../../state/useSetting';
+import { useData } from '../../state/useData';
 import { useSession } from '../../state/useSession';
 import { useNav } from '../../state/useNav';
 import AccountSection from './AccountSection';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
+
+/** 記憶條數的合法範圍。填錯只在「保存」時擋，不要在使用者打字當下把值搶走。 */
+const MEMORY_LIMIT_MIN = 1;
+const MEMORY_LIMIT_MAX = 50;
+const DEFAULT_MEMORY_LIMIT_TEXT = String(DEFAULT_MEMORY_LIMIT);
 
 interface ProviderForm {
   id?: string;
@@ -42,13 +49,22 @@ export default function SettingsScreen() {
   const [presetModel, setPresetModel] = useState('');
   const [params, setParams] = useState<ModelParams>({ ...DEFAULT_PARAMS });
   const [capabilities, setCapabilities] = useState<ModelCapability>({ ...DEFAULT_CAPABILITY });
-  const [globalConfig, setGlobalConfig] = useState({ memoryLimit: 4, prePrompt: '', postPrompt: '', prompt: '' });
+  /**
+   * 記憶條數刻意用**字串**存：用 number 的話，使用者把欄位清空會變成 `Number('') = 0`，
+   * 受控 input 立刻被塞回一個 0，變成「打都打不了字」。改成存字串、按保存時才驗證。
+   */
+  const [globalConfig, setGlobalConfig] = useState({ memoryLimit: DEFAULT_MEMORY_LIMIT_TEXT, prePrompt: '', postPrompt: '', prompt: '' });
+  const [memoryLimitError, setMemoryLimitError] = useState<string | null>(null);
+  const [memoryOn, setMemoryOn] = useSettingFlag('memoryEnabled', true);
   const showToast = useNav((s) => s.showToast);
   const reloadCard = useSession((s) => s.reloadCard);
+  const reloadSession = useSession((s) => s.reload);
+  const refreshModelLabel = useSession((s) => s.refreshModelLabel);
   const [fontScale, setFontScale] = useSetting('fontScale', '16');
   const [globalRules, setGlobalRules] = useState<RegexScriptRecord[]>([]);
   const backupRef = useRef<HTMLInputElement>(null);
   const [chatsCount, setChatsCount] = useState(0);
+  const dataVersion = useData((s) => s.version);
 
   const refresh = useCallback(async () => {
     const [ps, ms, active] = await Promise.all([listProviders(), listPresets(), getActive()]);
@@ -57,7 +73,13 @@ export default function SettingsScreen() {
     setActiveProviderId(active?.provider.id ?? null);
     setActivePresetId(active?.preset.id ?? null);
     const cfg = await db.configs.where('scope').equals('global').first();
-    if (cfg) setGlobalConfig({ memoryLimit: cfg.memoryLimit, prePrompt: cfg.prePrompt, postPrompt: cfg.postPrompt, prompt: cfg.prompt });
+    setGlobalConfig({
+      // 沒有設定列時顯示預設值，而不是 0——那個 0 就是使用者抱怨「刪掉又自己彈回來」的元凶
+      memoryLimit: String(cfg?.memoryLimit ?? DEFAULT_MEMORY_LIMIT_TEXT),
+      prePrompt: cfg?.prePrompt ?? '',
+      postPrompt: cfg?.postPrompt ?? '',
+      prompt: cfg?.prompt ?? '',
+    });
     const rules = await db.regexScripts.where('scope').equals('global').toArray();
     setGlobalRules(rules.sort((a, b) => a.order - b.order));
     setChatsCount(await db.chats.count());
@@ -66,6 +88,11 @@ export default function SettingsScreen() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 登入 / 登出 / 同步之後，這一頁也要跟著換一份資料
+  useEffect(() => {
+    if (dataVersion > 0) void refresh();
+  }, [dataVersion, refresh]);
 
   const onSaveProvider = async () => {
     if (!form) return;
@@ -98,16 +125,26 @@ export default function SettingsScreen() {
   };
 
   const onSaveGlobal = async () => {
+    // 只在保存時驗證：欄位是空的（或不是整數、超出範圍）就不給存，並指出問題
+    const raw = globalConfig.memoryLimit.trim();
+    const limit = Number(raw);
+    if (!raw || !Number.isInteger(limit) || limit < MEMORY_LIMIT_MIN || limit > MEMORY_LIMIT_MAX) {
+      setMemoryLimitError(`记忆条数要填 ${MEMORY_LIMIT_MIN}–${MEMORY_LIMIT_MAX} 之间的整数`);
+      showToast('记忆条数不合法，没有保存');
+      return;
+    }
+    setMemoryLimitError(null);
     const existing = await db.configs.where('scope').equals('global').first();
     await db.configs.put({
       id: existing?.id ?? 'global-config',
       scope: 'global',
       refId: null,
-      memoryLimit: globalConfig.memoryLimit,
+      memoryLimit: limit,
       prePrompt: globalConfig.prePrompt,
       postPrompt: globalConfig.postPrompt,
       prompt: globalConfig.prompt,
     });
+    setGlobalConfig((prev) => ({ ...prev, memoryLimit: String(limit) }));
     showToast('全局配置已保存');
   };
 
@@ -156,11 +193,51 @@ export default function SettingsScreen() {
       showToast('请选择服务商并填写模型名');
       return;
     }
-    await savePreset({ providerId: presetProvider, model: presetModel.trim(), params, capabilities });
+    const presetId = await savePreset({ providerId: presetProvider, model: presetModel.trim(), params, capabilities });
     setPresetOpen(false);
     setPresetModel('');
+    // 還沒有任何「使用中」的模型（等於正在用 mock）→ 保存後直接切過去，不必再手動點一次
+    const autoSwitched = (await getActive()) === null;
+    if (autoSwitched) await setActive(presetProvider, presetId);
     await refresh();
-    showToast('模型配置已保存');
+    await refreshModelLabel();
+    showToast(autoSwitched ? '模型配置已保存，并已从 mock 切换到它' : '模型配置已保存');
+  };
+
+  /** 恢復預設設定：保留服務商與模型配置，其餘設定回到出廠值 */
+  const onResetSettings = async () => {
+    const okToReset = window.confirm(
+      '恢复默认设置？\n\n会清掉：记忆条数、全局提示词 / 前置词 / 后置词、字号、记忆托管开关。\n会保留：服务商与模型配置（含 API Key）、卡片、对话、记忆库、正则脚本。',
+    );
+    if (!okToReset) return;
+    await resetSettings();
+    resetSettingCache();
+    await refresh();
+    await reloadSession();
+    showToast('已恢复默认设置（服务商与模型配置保留）');
+  };
+
+  /** 恢復預設卡片：無條件用內置卡片包覆蓋內置示範卡 */
+  const onResetCards = async () => {
+    const okToReset = window.confirm(
+      '恢复默认卡片？\n\n「性癖大图鉴 · 寻找新XP」这一张内置卡会被还原成出厂状态（提示词、互动页、空世界书）。\n你自己导入或新建的卡片不受影响。',
+    );
+    if (!okToReset) return;
+    await resetDefaultCards();
+    await reloadCard();
+    await reloadSession();
+    showToast('内置卡片已恢复默认');
+  };
+
+  const onClearLocal = async () => {
+    const okToClear = window.confirm(
+      '清空本机所有数据？\n\n卡片、对话、消息、记忆库、设置都会删除（内置卡会在下次进入时自动重建）。\n云端那份不受影响，下次登录会重新同步回来。',
+    );
+    if (!okToClear) return;
+    await clearLocalData();
+    resetSettingCache();
+    useData.getState().bump('cleared');
+    showToast('本机数据已清空');
   };
 
   const supportedFields: { key: keyof ModelParams; label: string; supported: boolean; step: number; min: number; max: number }[] = [
@@ -330,10 +407,43 @@ export default function SettingsScreen() {
         <section>
           <h2 className="mb-2 text-[13px] font-semibold text-slate-600">全局配置（对所有卡片生效）</h2>
           <div className="space-y-2 rounded-2xl border border-black/10 bg-white p-3">
+            <div className="rounded-xl bg-black/[0.03] px-3 py-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-medium text-slate-600">记忆库（记忆托管）</span>
+                <button
+                  type="button"
+                  aria-label="记忆托管开关"
+                  aria-pressed={memoryOn}
+                  onClick={() => setMemoryOn(!memoryOn)}
+                  className={'relative h-6 w-11 shrink-0 rounded-full transition ' + (memoryOn ? 'bg-[#0072E3]' : 'bg-black/15')}
+                >
+                  <span className={'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ' + (memoryOn ? 'left-[22px]' : 'left-0.5')} />
+                </button>
+              </div>
+              <div className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                开启后：AI 回复里的「近期记忆 / 永久记忆」区块会被自动收集成条目，
+                满下面设定的条数就归档成永久记忆，并在下一轮提示词里回注，让 AI 记住之前发生过什么。
+                关掉后：记忆区块只当普通文字显示，不再解析、不再归档、也不再回注（已有的条目会留着）。
+              </div>
+            </div>
             <label className="block">
-              <div className="mb-1 text-[12px] text-slate-500">记忆设定（保留条数）</div>
-              <input type="number" aria-label="记忆条数" className={inputClass} value={globalConfig.memoryLimit}
-                onChange={(e) => setGlobalConfig({ ...globalConfig, memoryLimit: Number(e.target.value) })} />
+              <div className="mb-1 text-[12px] text-slate-500">近期记忆保留条数</div>
+              <input
+                type="text"
+                inputMode="numeric"
+                aria-label="记忆条数"
+                className={inputClass}
+                value={globalConfig.memoryLimit}
+                placeholder={DEFAULT_MEMORY_LIMIT_TEXT}
+                onChange={(e) => {
+                  // 直接存使用者打的字，不要在這裡 Number()——那會把空字串變成 0 而打不了字
+                  setGlobalConfig({ ...globalConfig, memoryLimit: e.target.value });
+                  setMemoryLimitError(null);
+                }}
+              />
+              <div className={'mt-1 text-[11px] ' + (memoryLimitError ? 'text-red-500' : 'text-slate-400')}>
+                {memoryLimitError ?? `默认 ${DEFAULT_MEMORY_LIMIT_TEXT} 条；填 ${MEMORY_LIMIT_MIN}–${MEMORY_LIMIT_MAX} 的整数，保存时才检查`}
+              </div>
             </label>
             <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">提示词</div>
@@ -468,6 +578,40 @@ export default function SettingsScreen() {
             />
             <div className="text-[11px] text-slate-400">
               当前共 {chatsCount} 个会话 · 卡片与设置一并导出
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="mb-2 text-[13px] font-semibold text-slate-600">恢复与重置</h2>
+          <div className="space-y-2 rounded-2xl border border-black/10 bg-white p-3">
+            <div className="text-[12px] text-slate-500">
+              下面三个按钮都会先弹确认框，按了才真的执行。
+            </div>
+            <button type="button" onClick={() => void onResetSettings()}
+              className="dsh-btn-ghost w-full py-2.5 text-[13px]">
+              恢复默认设置
+            </button>
+            <div className="text-[11px] text-slate-400">
+              清掉记忆条数、全局提示词 / 前置词 / 后置词、字号、记忆托管开关；
+              <span className="text-slate-500">服务商与模型配置（含 API Key）会保留</span>，
+              卡片、对话、记忆库、正则脚本也不动。
+            </div>
+            <button type="button" onClick={() => void onResetCards()}
+              className="dsh-btn-ghost w-full py-2.5 text-[13px]">
+              恢复默认卡片
+            </button>
+            <div className="text-[11px] text-slate-400">
+              把内置那张「性癖大图鉴 · 寻找新XP」还原成出厂状态（自带互动页 + 空世界书）。
+              你自己导入或新建的卡片不受影响。
+            </div>
+            <button type="button" onClick={() => void onClearLocal()}
+              className="w-full rounded-full border py-2.5 text-[13px]"
+              style={{ borderColor: 'rgba(239,68,68,0.28)', color: '#ef4444' }}>
+              清空本机所有数据
+            </button>
+            <div className="text-[11px] text-slate-400">
+              只清本机。云端那份要删，请到上面「账号」里用「删除账号与云端数据」。
             </div>
           </div>
         </section>

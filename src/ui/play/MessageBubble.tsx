@@ -33,7 +33,7 @@ export default function MessageBubble({
           <button
             type="button"
             onClick={() => setShowActions((v) => !v)}
-            className="dsh-bubble-user whitespace-pre-wrap px-3.5 py-2.5 text-left text-[14px] leading-relaxed"
+            className="dsh-bubble-user whitespace-pre-wrap px-3.5 py-2.5 text-left leading-relaxed"
           >
             {raw}
           </button>
@@ -54,10 +54,16 @@ export default function MessageBubble({
     <div className="flex items-start gap-2 px-3 py-2">
       <div className="dsh-avatar">{avatarText || 'AI'}</div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <button
-          type="button"
+        {/*
+          這裡刻意用 div 而不是 button：氣泡內容裡可能還有按鈕（折疊面板的展開鈕、選項按鈕），
+          <button> 裡包 <button> 是非法 DOM，React 會警告、瀏覽器也可能把點擊吃錯。
+        */}
+        <div
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setShowActions((v) => !v); }}
           onClick={() => setShowActions((v) => !v)}
-          className="dsh-bubble block w-full px-3.5 py-3 text-left text-[14px] leading-[1.85] text-slate-800"
+          className="dsh-bubble block w-full px-3.5 py-3 text-left leading-[1.85] text-slate-800"
         >
           {result.blocks.map((b, i) => {
             if (b.kind === 'collapse') {
@@ -79,10 +85,14 @@ export default function MessageBubble({
                 </span>
               ) : null;
             }
+            if (b.kind === 'text') {
+              // 純文字走 React 自己的跳脫，不碰 dangerouslySetInnerHTML
+              return <span key={i} className="block whitespace-pre-wrap">{b.text}</span>;
+            }
             return <span key={i} className="block" dangerouslySetInnerHTML={{ __html: b.html }} />;
           })}
           {streaming && <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded-full bg-[#0072e3] align-middle" />}
-        </button>
+        </div>
 
         {showActions && !streaming && (
           <div className="mt-1.5 flex gap-3 pl-1 text-[11px] text-slate-400">

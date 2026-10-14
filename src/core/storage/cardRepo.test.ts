@@ -30,7 +30,7 @@ beforeEach(async () => {
 describe('卡片清单', () => {
   it('spec 校验与默认值补齐', () => {
     const json = parseCardJson(JSON.stringify({ spec: CARD_SPEC, name: '甲' }));
-    expect(json.memory.recentLimit).toBe(4);
+    expect(json.memory.recentLimit).toBe(6);
     expect(json.prompts.prompt).toBe('');
     expect(() => parseCardJson('{"spec":"other/9"}')).toThrow();
     expect(() => parseCardJson('not json')).toThrow();

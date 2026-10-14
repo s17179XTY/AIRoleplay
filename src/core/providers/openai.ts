@@ -1,5 +1,5 @@
 import { parseSSE } from './sse';
-import type { ChatRequest, ProviderAdapter, ProviderConfig, StreamEvent } from './types';
+import { isAbortError, type ChatRequest, type ProviderAdapter, type ProviderConfig, type StreamEvent } from './types';
 
 export function buildOpenAIBody(cfg: ProviderConfig, req: ChatRequest): Record<string, unknown> {
   void cfg;
@@ -58,8 +58,14 @@ export const openAIAdapter: ProviderAdapter = {
           ...cfg.extraHeaders,
         },
         body: JSON.stringify(buildOpenAIBody(cfg, req)),
+        signal: req.signal,
       });
     } catch (err) {
+      // 使用者按了「停止」：這不是錯誤，是預期行為
+      if (isAbortError(err)) {
+        yield { type: 'done', finishReason: 'aborted' };
+        return;
+      }
       yield { type: 'error', message: describeFetchError(err) };
       return;
     }
@@ -69,6 +75,7 @@ export const openAIAdapter: ProviderAdapter = {
       return;
     }
     for await (const ev of parseSSE(res.body)) {
+      if (req.signal?.aborted) break;
       if (ev.data === '[DONE]') break;
       if (!ev.data) continue;
       try {

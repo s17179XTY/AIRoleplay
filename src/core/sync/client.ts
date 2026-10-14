@@ -113,6 +113,8 @@ export interface SyncClient {
   devices(): Promise<DeviceInfo[]>;
   revokeDevice(id: string): Promise<void>;
   changePassword(input: { oldAuthKey: string } & CredentialUpdate): Promise<void>;
+  /** 刪除帳號：雲端的變更日誌、密文、blob 與所有 session 一次清乾淨（不可復原） */
+  deleteAccount(): Promise<void>;
   recoverStart(input: { username: string; recoveryAuthKey: string }): Promise<{ resetToken: string; recoveryWrappedDek: string }>;
   recoverFinish(input: { resetToken: string } & CredentialUpdate): Promise<void>;
 }
@@ -268,6 +270,14 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
     },
     async changePassword(input) {
       await call('/api/auth/password', { method: 'POST', body: input });
+    },
+    async deleteAccount() {
+      try {
+        await call('/api/account', { method: 'DELETE' });
+      } finally {
+        // 帳號沒了，本地 token 一定失效
+        setTokens(null);
+      }
     },
     async recoverStart(input) {
       const out = await call<{ resetToken: string; recoveryWrappedDek: string }>('/api/auth/recover/start', {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  SYNC_TABLES, LOCAL_ONLY_TABLES, keyOf, sanitizeForSync, stripLocalFields, isBlobKind, type SyncKind,
+  SYNC_TABLES, LOCAL_ONLY_TABLES, keyOf, mergeRemoteRow, sanitizeForSync, stripLocalFields, isBlobKind, type SyncKind,
 } from './kinds';
 
 describe('kinds', () => {
@@ -59,5 +59,53 @@ describe('kinds', () => {
     const row = { id: 'c1', title: 't', __rev: 4 };
     expect(sanitizeForSync('chat', row)).toEqual({ id: 'c1', title: 't', __rev: 4 });
     expect(stripLocalFields(row)).toEqual({ id: 'c1', title: 't' });
+  });
+});
+
+describe('mergeRemoteRow（同步不能吃掉本地資料）', () => {
+  it('provider：遠端信封沒有秘密，套用時必須保住本地的 apiKey 與 extraHeaders', () => {
+    const local = {
+      id: 'prov_1', label: '舊名', protocol: 'openai', baseUrl: 'https://old',
+      apiKey: 'sk-LOCAL', extraHeaders: { Authorization: 'Bearer LOCAL' }, createdAt: 1,
+    };
+    const remote = sanitizeForSync('provider', {
+      id: 'prov_1', label: '新名', protocol: 'openai', baseUrl: 'https://new',
+      apiKey: 'sk-OTHER', extraHeaders: { 'x': '1' }, createdAt: 1,
+    });
+    const merged = mergeRemoteRow('provider', remote, local);
+    expect(merged.label).toBe('新名');       // 遠端的新值要生效
+    expect(merged.baseUrl).toBe('https://new');
+    expect(merged.apiKey).toBe('sk-LOCAL');   // 但秘密只認本機的
+    expect(merged.extraHeaders).toEqual({ Authorization: 'Bearer LOCAL' });
+  });
+
+  it('provider：本地還沒有這一列時補成空值，不要留 undefined', () => {
+    const merged = mergeRemoteRow('provider', { id: 'prov_9', label: 'B 加的', protocol: 'openai', baseUrl: 'https://x', createdAt: 2 }, null);
+    expect(merged.apiKey).toBe('');
+    expect(merged.extraHeaders).toEqual({});
+  });
+
+  it('cardFile：遠端只帶 __fileKey（本體走 blob）時，本地已下載的明文不能被抹掉', () => {
+    const local = { cardId: 'c1', path: 'ui/index.html', kind: 'html', text: '<h1>本地已下載</h1>' };
+    const merged = mergeRemoteRow('cardFile', { cardId: 'c1', path: 'ui/index.html', kind: 'html', __fileKey: 'k' }, local);
+    expect(merged.text).toBe('<h1>本地已下載</h1>');
+  });
+
+  it('cardFile：遠端真的帶了 text（小檔走信封）時要用遠端的', () => {
+    const local = { cardId: 'c1', path: 'a.json', kind: 'json', text: 'old' };
+    const merged = mergeRemoteRow('cardFile', { cardId: 'c1', path: 'a.json', kind: 'json', text: 'new' }, local);
+    expect(merged.text).toBe('new');
+  });
+
+  it('assetMeta：遠端沒有 bytes 時保住本地已抓回的二進位', () => {
+    const bytes = new ArrayBuffer(4);
+    const local = { id: 'a1', mime: 'image/png', size: 4, bytes };
+    const merged = mergeRemoteRow('assetMeta', { id: 'a1', mime: 'image/png', size: 4 }, local);
+    expect(merged.bytes).toBe(bytes);
+  });
+
+  it('一般 kind 就是遠端覆蓋本地', () => {
+    const merged = mergeRemoteRow('chat', { id: 'chat_1', title: 'B 改的' }, { id: 'chat_1', title: 'A 的', vars: {} });
+    expect(merged.title).toBe('B 改的');
   });
 });

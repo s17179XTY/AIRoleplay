@@ -1,3 +1,4 @@
+import { handleDeleteAccount } from './account';
 import {
   authenticate, handleChangePassword, handleCreateInvite, handleListDevices, handleLogin, handleLogout, handleMe,
   handleRecoverFinish, handleRecoverStart, handleRefresh, handleRegister, handleRevokeDevice,
@@ -127,6 +128,8 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
     '/api/sync/push': 'POST',
     '/api/devices': 'GET',
     '/api/auth/password': 'POST',
+    // 刪除帳號（雲端變更日誌、密文、blob、所有 session 一次清掉）
+    '/api/account': 'DELETE',
   };
   const deviceMatch = path.match(/^\/api\/devices\/([^/]+)$/);
   if (deviceMatch) {
@@ -157,6 +160,10 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
 
   if (path === '/api/auth/password') {
     return toResponse(await handleChangePassword(env, auth.userId, await readJson(request)), cors);
+  }
+
+  if (path === '/api/account') {
+    return toResponse(await handleDeleteAccount(env, auth.userId), cors);
   }
 
   if (path === '/api/sync/pull') {

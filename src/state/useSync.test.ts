@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useSync } from './useSync';
+import { useData } from './useData';
 import { makeFakeServer, makeWorkerEnv, seedInvite } from '../test/fake-server';
 import { loadTokens, saveKdf, saveTokens, saveUsername } from '../core/sync/session';
 import { currentDbName, db, DEFAULT_DB_NAME, switchDatabase } from '../core/storage/db';
@@ -20,6 +21,7 @@ beforeEach(async () => {
   useSync.setState({
     username: null, status: 'signed-out', pending: 0, conflicts: 0, quota: null, lastSyncAt: null, message: null,
   });
+  useData.setState({ version: 0, reason: '' });
 });
 
 const seams = () => ({ fetchImpl: server, baseUrl: BASE, kdf: TEST_KDF });
@@ -136,5 +138,66 @@ describe('useSync', () => {
       useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', fetchImpl: server, kdf: TEST_KDF, baseUrl: '' }),
     ).rejects.toThrow('VITE_SYNC_API');
     expect(useSync.getState().message).toContain('沒有設定同步後端');
+  });
+
+  it('換庫與拉取到新資料時都會發 bumpData：畫面才知道要重讀（回歸：同步完 UI 沒更新）', async () => {
+    expect(useData.getState().version).toBe(0);
+
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+    const afterRegister = useData.getState().version;
+    expect(afterRegister).toBeGreaterThan(0);
+
+    await useSync.getState().logout();
+    expect(useData.getState().version).toBeGreaterThan(afterRegister);
+  });
+
+  it('refresh：有 token 但重載頁面後連的是預設庫時，會切回帳號專屬的庫', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+    await db.settings.put({ key: 'mine', value: '1' });
+
+    // 模擬重新載入頁面：DEK 沒了，而且連線回到預設庫
+    const { __resetSyncMemoryForTest } = await import('./useSync');
+    __resetSyncMemoryForTest();
+    await switchDatabase(DEFAULT_DB_NAME);
+    const before = useData.getState().version;
+
+    useSync.getState().refresh();
+    expect(useSync.getState().status).toBe('locked');
+
+    // refresh 的換庫是非同步的（不能擋住 render），等一下再看
+    await new Promise((r) => setTimeout(r, 30));
+    expect(currentDbName()).toBe('dsh-roleplay@alice');
+    expect(useData.getState().version).toBeGreaterThan(before);
+    expect((await db.settings.get('mine'))?.value).toBe('1'); // 看到的是帳號庫的資料
+  });
+
+  it('deleteAccount：先刪雲端再清本機、切回預設庫、token 失效', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+    await db.settings.put({ key: 'doomed', value: '1' });
+
+    await useSync.getState().deleteAccount(seams());
+
+    expect(useSync.getState().status).toBe('signed-out');
+    expect(useSync.getState().username).toBeNull();
+    expect(loadTokens()).toBeNull();
+    expect(currentDbName()).toBe(DEFAULT_DB_NAME);
+
+    // 帳號真的沒了：同一個名字再登入會被拒
+    await expect(useSync.getState().login({ username: 'alice', password: 'pw-123', ...seams() })).rejects.toThrow();
+  });
+
+  it('deleteAccount：伺服器刪失敗時不清本機（不能讓使用者以為刪乾淨了）', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+    await db.settings.put({ key: 'safe', value: '1' });
+
+    const failing: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/account')) return new Response('{"code":"boom","message":"炸了"}', { status: 500 });
+      return server(input, init);
+    };
+
+    await expect(useSync.getState().deleteAccount({ fetchImpl: failing, baseUrl: BASE, kdf: TEST_KDF })).rejects.toThrow();
+    expect(currentDbName()).toBe('dsh-roleplay@alice'); // 還在帳號庫
+    expect((await db.settings.get('safe'))?.value).toBe('1'); // 本機資料沒被清掉
   });
 });

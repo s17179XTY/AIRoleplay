@@ -1,8 +1,8 @@
 import type { DshDB } from '../storage/db';
 import { decryptEnvelope, encryptEnvelope, type Envelope } from './envelope';
-import { keyOf, SYNC_TABLES, sanitizeForSync, type SyncKind } from './kinds';
+import { keyOf, mergeRemoteRow, SYNC_TABLES, sanitizeForSync, type SyncKind } from './kinds';
 import { clearOutbox, setApplyingRemote, takeOutbox, type OutboxEntry } from './outbox';
-import { ensureBlobUploaded, needsBlob, plaintextOf } from './blobs';
+import { ensureBlobLocal, ensureBlobUploaded, MAX_BLOB_BATCH, needsBlob, plaintextOf } from './blobs';
 import type { PulledRecord, SyncClient } from './client';
 
 export interface EngineContext {
@@ -202,7 +202,12 @@ export async function applyRemoteRecord(
     return 'skipped';
   }
 
-  const row = { ...envelope.data } as Record<string, unknown>;
+  const remote = { ...envelope.data } as Record<string, unknown>;
+  // __fileKey 只是信封的傳輸欄位，不該落地到正常資料表
+  delete remote.__fileKey;
+  // 遠端信封不含祕密與已走 blob 的本體：以本地現有的列為底合併，否則會把本地資料抹掉
+  const local = (await readRowForSync(ctx.db, kind, record.id)) as Record<string, unknown> | null;
+  const row = mergeRemoteRow(kind, remote, local);
   setApplyingRemote(true);
   try {
     await table.put(row);
@@ -216,6 +221,7 @@ export async function applyRemoteRecord(
     const fileKey = (envelope.data as { __fileKey?: string }).__fileKey;
     await ctx.db.blobState.put({
       blobId: record.blobRef,
+      kind: kind === 'assetMeta' || kind === 'cardFile' ? kind : undefined,
       state: 'remote',
       refId: record.id,
       size: record.size ?? 0,
@@ -248,7 +254,32 @@ export async function pullChanges(
   }
 
   await ctx.db.syncState.put({ key: 'lastSyncAt', value: String(Date.now()) });
+  await fetchRemoteBlobs(ctx);
   return { applied, cursor };
+}
+
+/**
+ * 把「雲端有、本地還沒有明文」的 blob 抓回來。
+ *
+ * 為什麼一定要補這一步：卡片互動頁與素材圖走 blob 通道，拉到的信封只有中繼資料，
+ * 不抓回來的話新裝置上「卡片打開是空的、圖片全不見」——看起來就像資料沒同步過來。
+ * KV 是最終一致的，抓不到就維持 state='remote'，下次同步再試（不標失敗、不清本地參照）。
+ */
+export async function fetchRemoteBlobs(ctx: EngineContext): Promise<{ fetched: number; pending: number }> {
+  let fetched = 0;
+  let pending = 0;
+  const waiting = await ctx.db.blobState.where('state').equals('remote').limit(MAX_BLOB_BATCH).toArray();
+  for (const state of waiting) {
+    if (!state.kind) {
+      // 早期版本寫入的 blobState 沒有 kind，無法反查是哪一筆記錄；跳過，等它被重新排進 outbox
+      pending += 1;
+      continue;
+    }
+    const outcome = await ensureBlobLocal(ctx, state.kind, state.refId);
+    if (outcome === 'fetched' || outcome === 'have') fetched += 1;
+    else pending += 1;
+  }
+  return { fetched, pending };
 }
 
 /** 首次註冊：把本地既有的全部資料排進 outbox 並推上去 */

@@ -12,10 +12,10 @@ describe('演示卡包', () => {
     expect(back.assets).toHaveLength(1);
   });
 
-  it('世界书与界面可从包中解析', () => {
+  it('世界书为空文件，界面可从包中解析', () => {
     const pkg = seedPackage();
     const entries = parseWorldbookFile(pkg.texts.find((t) => t.path === 'worldbook.json')!.text);
-    expect(entries.length).toBeGreaterThan(0);
+    expect(entries).toHaveLength(0);
     expect(pkg.texts.find((t) => t.path === 'ui/index.html')!.text).toContain('generated-content-preview');
   });
 });

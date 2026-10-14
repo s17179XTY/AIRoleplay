@@ -5,6 +5,7 @@ import { packCard, unpackCard } from '../../core/cards/package';
 import { importStPng } from '../../core/cards/stCard';
 import { useNav } from '../../state/useNav';
 import { useSession } from '../../state/useSession';
+import { useData } from '../../state/useData';
 import { downloadBytes, readFileBytes } from './fileUtils';
 
 export default function CardListScreen() {
@@ -15,6 +16,7 @@ export default function CardListScreen() {
   const setTab = useNav((s) => s.setTab);
   const openEditor = useNav((s) => s.openEditor);
   const showToast = useNav((s) => s.showToast);
+  const dataVersion = useData((s) => s.version);
 
   const refresh = useCallback(async () => {
     let list = await listCards();
@@ -29,6 +31,11 @@ export default function CardListScreen() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 登入 / 登出 / 同步之後卡片清單也會整個換一份，不重讀就看不到
+  useEffect(() => {
+    if (dataVersion > 0) void refresh();
+  }, [dataVersion, refresh]);
 
   const onImport = async (file: File) => {
     setBusy(true);
@@ -124,7 +131,7 @@ export default function CardListScreen() {
         )}
       </main>
 
-      <div className="dsh-tabbar safe-bottom flex gap-2 px-3.5 py-3">
+      <div className="dsh-tabbar flex gap-2 px-3.5 py-3">
         <button type="button" onClick={onCreate} className="dsh-btn-ghost flex-1 py-3 text-[13px]">
           新建卡片
         </button>

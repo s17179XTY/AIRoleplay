@@ -12,7 +12,10 @@ import { canonicalInviteCode } from '../core/sync/invite';
 import { initialPush, syncNow, type EngineContext } from '../core/sync/engine';
 import { pendingCount } from '../core/sync/outbox';
 import { LOCAL_ONLY_TABLES } from '../core/sync/kinds';
-import { db, switchDatabase, dbNameFor, DEFAULT_DB_NAME, type DshDB } from '../core/storage/db';
+import { db, switchDatabase, currentDbName, dbNameFor, DEFAULT_DB_NAME, type DshDB } from '../core/storage/db';
+import { clearLocalData } from '../core/storage/reset';
+import { resetSettingCache } from './useSetting';
+import { bumpData } from './useData';
 
 export type SyncStatus = 'signed-out' | 'locked' | 'idle' | 'syncing' | 'error';
 
@@ -51,6 +54,8 @@ export interface SyncActions {
   recoverAccount(
     input: { username: string; recoveryCode: string; newPassword: string } & SyncSeams,
   ): Promise<{ recoveryCode: string }>;
+  /** 刪除帳號：雲端與本機一起清掉（不可復原） */
+  deleteAccount(seams?: SyncSeams): Promise<void>;
 }
 
 const INITIAL: SyncUiState = {
@@ -139,6 +144,17 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     }
     // token 還在但 DEK 只在記憶體裡 → 需要解鎖
     set({ username, status: currentDek ? get().status : 'locked', message: null });
+
+    // 重新載入頁面後連的是**預設庫**（未登入那一份）。不切回帳號專屬的庫，
+    // 使用者看到的就是「同步過去的資料不見了」——所以要主動切回來並通知畫面重讀。
+    // （DEK 仍然只在記憶體裡：不需解鎖也能看本機資料，但要雲端同步仍得輸入密碼。）
+    const target = dbNameFor(username);
+    if (currentDbName() === target) return;
+    void (async () => {
+      await switchDatabase(target);
+      resetSettingCache();
+      bumpData('reopen');
+    })();
   },
 
   async register({ username, inviteCode, password, ...seams }) {
@@ -174,6 +190,9 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       await writeSnapshot(account, snapshot);
       await initialPush(context(client, account));
       set({ username: name, status: 'idle', message: null });
+      // 換庫了：設定快取是舊庫的值，畫面也還停在舊庫的資料
+      resetSettingCache();
+      bumpData('register');
       await get().runSync(seams);
       return { recoveryCode };
     } catch (err) {
@@ -199,6 +218,8 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       saveKdf(name, serverKdf);
       await switchDatabase(dbNameFor(name));
       set({ username: name, status: 'idle', message: null });
+      resetSettingCache();
+      bumpData('login');
       await get().runSync(seams);
     } catch (err) {
       set({ status: 'error', message: errorMessage(err) });
@@ -227,6 +248,28 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     saveUsername(null);
     await switchDatabase(DEFAULT_DB_NAME);
     set({ ...INITIAL });
+    // 回到未登入的預設庫：設定快取與畫面都必須跟著換，否則看起來像資料消失了
+    resetSettingCache();
+    bumpData('logout');
+  },
+
+  async deleteAccount(seams = {}) {
+    try {
+      const client = makeClient(seams);
+      await client.deleteAccount();
+    } catch (err) {
+      // 伺服器沒刪成功就**不能**清本地：否則使用者以為刪乾淨了，雲端其實還留著一份
+      set({ status: 'error', message: errorMessage(err) });
+      throw err;
+    }
+    await clearLocalData();
+    currentDek = null;
+    saveTokens(null);
+    saveUsername(null);
+    await switchDatabase(DEFAULT_DB_NAME);
+    set({ ...INITIAL });
+    resetSettingCache();
+    bumpData('account-deleted');
   },
 
   async runSync(seams = {}) {
@@ -248,6 +291,8 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
         lastSyncAt: lastSyncAt ? Number(lastSyncAt.value) : Date.now(),
         message: result.conflicts > 0 ? `${result.conflicts} 筆衝突已保留本地副本` : null,
       });
+      // 有拉到別台裝置的東西（或補回了 blob）就通知畫面重讀，否則看起來像「同步完資料沒了」
+      if (result.applied > 0) bumpData('sync');
     } catch (err) {
       set({ status: 'error', message: errorMessage(err) });
     }

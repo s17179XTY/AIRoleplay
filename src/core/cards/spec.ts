@@ -47,7 +47,7 @@ export interface DshCardJson {
 
 export const DEFAULT_MEMORY: MemoryRule = {
   parser: 'details-v1',
-  recentLimit: 4,
+  recentLimit: 6,
   stripFromHistory: true,
   archive: 'concat',
   inject: 'after-history',

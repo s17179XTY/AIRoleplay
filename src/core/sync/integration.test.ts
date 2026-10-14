@@ -99,8 +99,34 @@ describe('兩裝置整合（spec §12 驗收標準 2 / 4 / 7）', () => {
     await syncNow({ db: dbB, client, dek, deviceId: 'dev_b' });
     const provider = await dbB.providers.get('prov_1');
     expect(provider?.baseUrl).toBe('https://api.deepseek.com');
-    expect(provider?.apiKey).toBeUndefined();
-    expect(provider?.extraHeaders).toBeUndefined();
+    // 空字串而不是 undefined：信封本來就沒帶 apiKey，套用時必須補成合法空值，
+    // 否則 React 受控 input 會拿到 undefined 變成未受控元件
+    expect(provider?.apiKey).toBe('');
+    expect(provider?.extraHeaders).toEqual({});
+  });
+
+  it('驗收 4b：回歸——同步不會把本機的 API Key / 額外標頭清空', async () => {
+    const { client, dek } = await account();
+    const dbA = await device(`int-j-${rnd()}`);
+    await dbA.providers.put({
+      id: 'prov_1', label: 'DeepSeek', protocol: 'openai', baseUrl: 'https://api.deepseek.com',
+      apiKey: 'sk-A-KEEP-ME-1234567890', extraHeaders: { 'x-a-canary': 'A-HEADER' }, createdAt: 1,
+    });
+    await syncNow({ db: dbA, client, dek, deviceId: 'dev_a' });
+
+    const dbB = await device(`int-k-${rnd()}`);
+    await syncNow({ db: dbB, client, dek, deviceId: 'dev_b' });
+    // B 在自己的裝置上補了金鑰（金鑰永遠不上雲，只存在這一台）
+    await dbB.providers.update('prov_1', { apiKey: 'sk-B-LOCAL-1234567890', extraHeaders: { 'x-b': '1' } });
+    await syncNow({ db: dbB, client, dek, deviceId: 'dev_b' });
+
+    // A 把 B 推上來的版本拉回來：信封裡沒有 apiKey，套用時**不得**把 A 自己的清掉
+    await syncNow({ db: dbA, client, dek, deviceId: 'dev_a' });
+    const a = await dbA.providers.get('prov_1');
+    expect(a?.apiKey).toBe('sk-A-KEEP-ME-1234567890');
+    expect(a?.extraHeaders).toEqual({ 'x-a-canary': 'A-HEADER' });
+    // B 自己那份也不能被雲端的空版本蓋掉
+    expect((await dbB.providers.get('prov_1'))?.apiKey).toBe('sk-B-LOCAL-1234567890');
   });
 
   it('驗收 7：離線期間的變更會補推，另一台看得到', async () => {

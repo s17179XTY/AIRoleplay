@@ -50,7 +50,7 @@
     src/core/sync/        同步内核：KDF/信封加解密、blob、表↔信封映射、outbox 收敛点、HTTP 客户端、同步引擎
     worker/               独立的 Cloudflare Worker（wrangler.jsonc + migrations + src + test）；服务器零知识
     src/ui/               手机端界面：play / cards / settings / components
-    src/state/            Zustand：useSession（当前卡片与会话）、useNav、useSetting
+    src/state/            Zustand：useSession（当前卡片与会话）、useNav、useSetting（共享快取）、useSync（账号/同步）、useData（换库广播）
     src/assets/cards/     内置卡的原始文件（ui.html 用 ?raw 打进包里）
     docs/superpowers/     设计文档与实施计划
     docs/reference/       参考素材（含从风月爬下来的原版卡片页，仅供比对）
@@ -85,6 +85,12 @@
    - 用 CDP 的 `Runtime.evaluate` 驱动真实点击/输入，`Page.captureScreenshot` 截图；
    - 宽度类问题一定要量：`document.querySelector('.dsh-shell').getBoundingClientRect().width` 对比 `window.innerWidth`，
      并检查 `documentElement.scrollWidth > clientWidth`（横向溢出）。
+   - 现成探针：`node scripts/cdp-ui-check.mjs <port> <url>`（走 `node.exe`，见 §4 的 Windows 注意；
+     截图会写到 gitignore 掉的 `shots/`）。
+     它一次验完：字级即时生效、输入框到导航的间距、记忆托管开关与说明、等待提示 + 停止钮、
+     记忆区块仍在讯息里、`button button` 必须为 0、往上滑不再被拉回底部 + 「回到底部」、以及 **console 零警告**。
+     `Runtime.enable` 会回放这个 target 之前的 console，所以**导航之后要先清空 logs 数组**再判定。
+     退出前它会印一行 JSON，`"pass": true` 才算过。
 4. `git commit`，中文提交信息，`fix:` / `feat:` / `chore:` 前缀。
 
 ## 6. 已知坑（都踩过）
@@ -129,6 +135,22 @@
 | 邀请码手抄打错就白费 | 资料库存的是 `sha256(码)`，差一个字元完全对不上 | 客户端与服务端都做 `canonicalInviteCode()`（NFKC → 大写 → 只留英数 → 每 4 字补破折号）；服务端同时试「正规范化」与「原样」两种杂湊，兼容早期或手塞的码 |
 | `wrangler d1 execute --json` 报 `code: 7403 未授权` | 这台机器上的 wrangler 走 `--json` 是另一条 API 路径 | 去掉 `--json` 就正常 |
 
+### 使用者实测回報後補上的坑（2026-10-15）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| **同步一次，本机 API Key 就被清空** | `sanitizeForSync('provider')` 本来就不带 `apiKey` / `extraHeaders`（这是对的），但 `applyRemoteRecord` 直接 `table.put(row)` —— 一封不含秘密的信封把本地整列覆盖掉，秘密就没了。同一类错误还有 `cardFile.text` 与 `asset.bytes`（走 blob，信封只有 `__fileKey`） | 套用远端一律走 `kinds.mergeRemoteRow(kind, remote, local)`：以本地列为底、只覆盖信封真的带来的栏位；provider 还补空字串，免得 UI 拿到 `undefined`。**同步永远只能「补」，不能把本地的东西变少。** |
+| 新装置同步完「卡片打开是空的、图全不见了」 | `ensureBlobLocal()` 写好了却**没有任何生产代码呼叫它**：拉到的卡片页/素材只有中继资料，明文永远补不回来（KV 最终一致，pull 当下还可能 404） | `pullChanges()` 收尾调 `fetchRemoteBlobs()`，扫 `blobState.state === 'remote'` 的条目抓回来；抓不到就留着，下次同步再试。因此 `blobState` 必须记 `kind`（否则从 refId 无法反查是哪张表） |
+| 「近期记忆出现后又消失，生成完就没了」 | `extractMemories()` 解析成功后 `details.remove()`。串流途中条目还没写完 → 凑不出 `[1]…` → 不移除、看得见；生成结束 → 移除 → 消失 | **不要在渲染层移除记忆区块**。记忆要留在 AI 讯息里显示；回注提示词时另有 `stripMemoryAndThink()` 负责剥离，不会重复 |
+| 整段 AI 回覆是一个**空气泡**（只有内距、没有内容） | `renderMessage()` 只走 `root.children`（元素）。回覆完全没标籤时 blocks 是空的 | 改走 `root.childNodes`：纯文字产出 `{kind:'text'}` 区块，交给 React 跳脱 + `whitespace-pre-wrap` 保留换行。**任何渲染管线都要问一句：最朴素的那一种输入会长怎样？** |
+| **按下「停止」没反应、生成照样跑** | `AbortController` 在 `streamReply()` 里才建立，而 `set({streaming:true})` 到真正串流之间还有一串 await（读正则、读记忆、组提示词）。这段空窗按停止时 `currentAbort` 还是 null | `send()` / `regenerate()` **同步**建立 controller 并挂到 `currentAbort`，再交给 `streamReply`；`streamReply` 开头先检查 `signal.aborted`。有测试专门按这个时序守 |
+| 「重新生成」会多插一条一模一样的**使用者**讯息 | `regenerate()` 是「把 leaf 指回去 → 再叫一次 `send()`」，而 `send()` 必定新增一列使用者讯息 | 拆出 `streamReply()`：`send` 与 `regenerate` 共用它，差别只在「挂在谁下面」与「这一轮的使用者输入是什么」 |
+| **同步完 UI 没更新，看起来像资料没了** | 三个原因叠在一起：① 登入/登出会 `switchDatabase()` 换整个 IndexedDB 连线，但没有任何东西通知画面重读；② `runSync` 套用远端变更也不通知；③ 重新载入页面时连的是**预设库**，`refresh()` 没有切回帐号库 | 新增 `state/useData.ts`（`bumpData()` 广播）+ `useSession.reload()`；`switchDatabase` / `runSync(applied>0)` / `refresh()` 都要发；`AppShell` 启动就跑 `refresh()` 把连线切回帐号库 |
+| 字级设定点了没反应 | `useSetting()` 每个呼叫点各有一份 `useState`——AppShell（写 `--dsh-fs`）与设定页（那排按钮）互不知情 | `useSetting` 改成模组层共享快取 + 订阅者广播；换库/恢复预设时用 `resetSettingCache()` 作废并重读 |
+| 输入框下面多一大块空白 | `Composer` 与 AppShell 底部导航**都**加了 `.safe-bottom`，安全区留白叠了两份 | 只有画面最底部那一条能吃 `safe-bottom`；`Composer` 只留一般内距。量测方式：`input.bottom` 到 `nav.top`（CDP 探针会验） |
+| 记忆条数栏位「删掉就自己弹回 0，打不了字」 | `<input type="number" value={number}>` + `Number(e.target.value)`：空字串变成 `0`，受控 input 立刻被写回 0 | 状态存**字串**、`type="text"`，只在按保存时验证（`1–50` 的整数）；预设 6 条 |
+| `<button>` 里包 `<button>`（React 警告，点击也可能被吃错） | 气泡外层本来是 `<button>`，而内容里有折叠面板的展开钮与选项钮 | AI 气泡外层改 `div role="button"`；真按钮才用 `<button>`。CDP 探针会数 `button button` 必须为 0 |
+
 ## 7. 数据模型要点
 
 - `messages` 是**树**（`parentId` + `chats.currentLeafId`）：重新生成 = 挂第二个孩子，回溯 = 把 currentLeafId 指回历史节点。
@@ -141,7 +163,9 @@
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**50 个测试文件 / 289 个用例全绿**，构建通过。
+改之前先跑一遍确认基线：**54 个测试文件 / 335 个用例全绿**，构建通过。
 关键回归测试：装配顺序、世界书触发、记忆归档与回注、正则替换、白名单清洗（含 XSS 用例）、卡片 zip 往返、酒馆卡互转、卡片自愈、草稿态不落库、布局约束。
-同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、两装置端到端一致（`src/core/sync/integration.test.ts`）。
-后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs` 对 `wrangler dev` 冒烟。
+渲染相关的关键回归测试：**纯文字也要渲染成 `text` 区块**（不能是空气泡）、**记忆区块提取后仍留在正文里**、气泡内不得有 `<button>` 包 `<button>`（`src/core/render/pipeline.test.ts`、`src/ui/play/MessageBubble.test.tsx`）。
+会话相关的关键回归测试：**「停止」在任何时刻按下都要生效**（含「还在组提示词」的空窗时序）、**「重新生成」不得多插使用者讯息**、记忆托管开关、换库后 `reload()`（`src/state/useSession.test.ts`）。
+同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、两装置端到端一致（`src/core/sync/integration.test.ts`）。
+后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs` 对 `wrangler dev` 冒烟。删除帐号端点另有 `worker/test/account.test.ts`（含「别人的帐号不受影响」与「KV 素材一起删」）。

@@ -1,6 +1,6 @@
 import type { WbEntryInput } from '../assembler/types';
 
-export const CARD_VERSION = '2.0.0';
+export const CARD_VERSION = '2.1.0';
 export const CARD_NAME = '性癖大图鉴 · 寻找新XP';
 export const SEED_CARD_ID = 'demo-card-0001';
 
@@ -164,12 +164,12 @@ export const MAIN_PROMPT = [
   '3. 档案状态：永久记忆是永久性的，且只读。',
   '',
   '### 记忆区域定义',
-  '- ⭐️近期记忆（Working Memory）：记录最近的交互内容，单条 >20 字，最大 4 条。',
-  '- 🌟永久记忆（History Archive）：永久存储历史记录，单条 >80 字，无上限，由 4 条近期记忆合并而成。',
+  '- ⭐️近期记忆（Working Memory）：记录最近的交互内容，单条 >20 字，最大 6 条。',
+  '- 🌟永久记忆（History Archive）：永久存储历史记录，单条 >80 字，无上限，由 6 条近期记忆合并而成。',
   '',
   '### 归档与更新规则',
   '1. 单条生成：每次与用户交互结束后，你必须且只生成一条新的近期记忆摘要条目，其中必须包含用户选择的所有XP。',
-  '2. 合成条件：在添加新条目之前，若当前近期记忆达到 4 条上限，则这 4 条记忆必须立即被合成一条档案，存入永久记忆，并清空近期记忆区。',
+  '2. 合成条件：在添加新条目之前，若当前近期记忆达到 6 条上限，则这 6 条记忆必须立即被合成一条档案，存入永久记忆，并清空近期记忆区。',
   '3. 最终操作：无论是否触发合成，本次生成的新摘要条目都将被添加至近期记忆。',
   '',
   '# 思维链',
@@ -193,7 +193,7 @@ export const MAIN_PROMPT = [
   '若在场有更多人物，继续按统一状态栏格式输出，最高生成三个次要角色状态栏。',
   '',
   '<!-- 6 记忆 -->',
-  '<details><summary>近期记忆</summary>⭐️近期记忆<br>当前记忆数目：｛数量｝/4<br>[1]（日期早中晚） （总结内容）</details>',
+  '<details><summary>近期记忆</summary>⭐️近期记忆<br>当前记忆数目：｛数量｝/6<br>[1]（日期早中晚） （总结内容）</details>',
   '<details><summary>永久记忆</summary>🌟永久记忆<br>当前档案数目：｛数量｝/无上限<br>[1]（日期早中晚） （总结内容）</details>',
   '',
   '<!-- 7 写在回复末尾的剧情走向，色情四种/不色情两种 -->',
@@ -213,25 +213,10 @@ export const MAIN_PROMPT = [
 
 export const POST_PROMPT = '';
 
-export const WORLDBOOK: WbEntryInput[] = [
-  {
-    id: 'wb-su', keys: ['苏小染', '小染', '主人公'], secondaryKeys: [], constant: false, selective: false,
-    position: 'before-char', order: 1, depth: 4, recursive: false, enabled: true,
-    content: '苏小染：市一中高三学生，公认的校花。十岁那年被一个神秘组织改造过基因，从此拥有读心与意念操控万物的能力。她几乎不用后者，觉得读心已经足够看清人心。外表清纯乖巧，内心清醒冷静。',
-  },
-  {
-    id: 'wb-zhang', keys: ['张强', '体育老师'], secondaryKeys: [], constant: false, selective: false,
-    position: 'before-char', order: 2, depth: 4, recursive: false, enabled: true,
-    content: '张强：市一中体育老师，三十出头，体格魁梧，平时在操场上嗓门极大。表面一本正经，内心对漂亮女学生常有龌龊念头，胆子却很小。',
-  },
-  {
-    id: 'wb-school', keys: ['市一中', '学校', '教学楼', '校园'], secondaryKeys: [], constant: true, selective: false,
-    position: 'after-char', order: 10, depth: 4, recursive: false, enabled: true,
-    content: '市一中：普通公立高中，三栋教学楼、一个操场。秋末冬初，梧桐落叶，走廊里常有讲课声与保洁拖地的水桶声。上课时间为 8:00–17:00。',
-  },
-  {
-    id: 'wb-power', keys: ['读心', '意念操控', '能力'], secondaryKeys: [], constant: false, selective: false,
-    position: 'after-char', order: 11, depth: 4, recursive: false, enabled: true,
-    content: '能力规则：读心是被动的，只要有人在附近动念就会像嗡鸣一样钻进脑海，距离越近越清晰；意念操控需要集中精神，可以移动视线内的静物，但会消耗体力，主人公几乎不使用。',
-  },
-];
+/**
+ * 內置示例卡**不带世界书**。
+ * 世界观 / 主人公 / 前情提要全部由互动页产出的【初始信息设定】决定，
+ * 卡片里再塞一份只适用于某个旧剧本的条目，只会在别的剧本里乱触发——所以这里是空的。
+ * 使用者要加，自己在「卡片 → 世界书」里加。
+ */
+export const WORLDBOOK: WbEntryInput[] = [];

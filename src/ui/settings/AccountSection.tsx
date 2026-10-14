@@ -50,6 +50,8 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
   const [forgotMode, setForgotMode] = useState(false);
   const [forgotCode, setForgotCode] = useState('');
   const [forgotPw, setForgotPw] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
 
   const backendMissing = !syncApiBaseUrl() && !seams.baseUrl;
 
@@ -119,6 +121,16 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
       setRecoverySaved(false);
       setRecoveryCode(out.recoveryCode);
     });
+  };
+
+  /**
+   * 刪除帳號：雲端先刪成功才清本機（見 useSync.deleteAccount 的註解）。
+   * 成功後 useSync 會自己清本機、換回預設庫、發 bumpData，畫面自動回到未登入狀態。
+   */
+  const onDeleteAccount = async () => {
+    await run(() => useSync.getState().deleteAccount(seams));
+    setDeleteOpen(false);
+    setDeleteConfirm('');
   };
 
   const onRecover = async () => {
@@ -241,6 +253,44 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
             )}
             <div className="text-[11px] text-slate-400">
               API Key 只存在本机，永远不会上传；退出登录后本机数据保留。
+            </div>
+
+            <div className="rounded-xl border border-red-100 bg-red-50/60 p-3">
+              <div className="text-[12px] font-medium text-red-600">危险操作</div>
+              <div className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                删除账号会清掉云端这一份的<span className="text-slate-600">全部数据</span>（变更记录、密文、素材）
+                以及所有设备的登录状态，<span className="text-red-600">不可复原</span>，本机数据也会一起清掉。
+                想留着就先「导出全部数据」。
+              </div>
+              {deleteOpen ? (
+                <div className="mt-2 space-y-2">
+                  <input className={inputClass} placeholder={`输入账号名 ${username} 以确认`} value={deleteConfirm}
+                    onChange={(e) => setDeleteConfirm(e.target.value)} />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={busy || deleteConfirm.trim().toLowerCase() !== username}
+                      className="flex-1 rounded-xl bg-red-500 py-2 text-[12px] font-semibold text-white disabled:opacity-40"
+                      onClick={() => void onDeleteAccount()}
+                    >
+                      {busy ? '正在删除…' : '确认删除账号与云端数据'}
+                    </button>
+                    <button type="button" className="rounded-xl border border-black/10 px-4 py-2 text-[12px] text-slate-500"
+                      onClick={() => { setDeleteOpen(false); setDeleteConfirm(''); }}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="mt-2 w-full rounded-full border py-2 text-[12px]"
+                  style={{ borderColor: 'rgba(239,68,68,0.28)', color: '#ef4444' }}
+                  onClick={() => { setDeleteOpen(true); setLocalError(null); }}
+                >
+                  删除账号与云端数据
+                </button>
+              )}
             </div>
           </div>
         </section>

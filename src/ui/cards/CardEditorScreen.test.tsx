@@ -5,7 +5,7 @@ import { db } from '../../core/storage/db';
 import { saveCardPackage, loadCardPackage } from '../../core/storage/cardRepo';
 import { seedPackage } from '../../core/storage/seedPackage';
 import { useNav } from '../../state/useNav';
-import { packageToDraft } from './draft';
+import { packageToDraft, draftToPackage } from './draft';
 
 beforeEach(async () => {
   await db.cardFiles.clear();
@@ -56,7 +56,16 @@ describe('卡片编辑器', () => {
 
   it('草稿转换后世界书条目数量一致', async () => {
     const pkg = seedPackage();
+    // 內置卡的世界書是空的，測試自己塞兩條進去驗往返數量
+    const file = pkg.texts.find((t) => t.path === 'worldbook.json')!;
+    const entries = ['甲', '乙'].map((k, i) => ({
+      id: 'wb-' + i, keys: [k], secondaryKeys: [], content: k + '的内容',
+      constant: false, selective: false, position: 'before-char' as const,
+      order: i, depth: 4, recursive: false, enabled: true,
+    }));
+    file.text = JSON.stringify({ version: 1, entries });
     const draft = packageToDraft(pkg);
-    expect(draft.worldbook.length).toBeGreaterThan(0);
+    expect(draft.worldbook).toHaveLength(2);
+    expect(packageToDraft(draftToPackage(draft, pkg)).worldbook).toHaveLength(2);
   });
 });

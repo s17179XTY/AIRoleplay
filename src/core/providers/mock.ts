@@ -10,9 +10,10 @@ export function createMockAdapter(script: string, opts: MockOptions = {}): Provi
     async listModels() {
       return ['mock-model'];
     },
-    async *streamChat(_cfg: ProviderConfig, _req: ChatRequest): AsyncGenerator<StreamEvent> {
+    async *streamChat(_cfg: ProviderConfig, req: ChatRequest): AsyncGenerator<StreamEvent> {
       yield { type: 'reasoning', delta: '（mock 思考：按卡片格式生成状态栏与选项）' };
       for (let i = 0; i < script.length; i += chunkSize) {
+        if (req.signal?.aborted) return;
         if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
         yield { type: 'text', delta: script.slice(i, i + chunkSize) };
       }

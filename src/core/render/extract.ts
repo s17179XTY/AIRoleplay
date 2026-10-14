@@ -76,14 +76,15 @@ export function extractMemories(html: string): { body: string; memories: Extract
     const text = details.textContent ?? '';
     MEMORY_ENTRY_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    let found = false;
     while ((m = MEMORY_ENTRY_RE.exec(text)) !== null) {
       const entryText = (m[3] ?? '').trim();
       if (!entryText) continue;
-      found = true;
       memories.push({ tier, dateLabel: (m[2] ?? '').trim(), text: entryText });
     }
-    if (found) details.remove();
+    // 這裡**刻意不把 details 從正文移除**。
+    // 之前移除的後果：串流途中條目還沒寫完（湊不出 `[1]…`）→ 移除條件不成立 → 記憶區塊看得見；
+    // 生成結束、條目完整了 → 被移除 → 使用者看到「近期記憶出現後又消失，生成完就沒了」。
+    // 記憶要留在 AI 訊息裡顯示（回注提示詞時另有 stripMemoryAndThink 負責剝離，不會重複）。
   }
   return { body: root.innerHTML, memories };
 }

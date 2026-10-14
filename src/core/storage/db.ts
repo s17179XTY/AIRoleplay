@@ -19,6 +19,11 @@ export interface ConflictRecord {
 }
 export interface BlobStateRecord {
   blobId: string;
+  /**
+   * 這顆 blob 屬於哪一種記錄（`assetMeta` / `cardFile`）。
+   * 沒有它就無法從 refId 反查回哪一張表——那會讓「剛同步完卡片頁/圖片是空的」永遠補不回來。
+   */
+  kind?: 'assetMeta' | 'cardFile';
   state: 'local' | 'uploaded' | 'remote';
   refId: string;
   size: number;

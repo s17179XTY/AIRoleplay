@@ -31,6 +31,6 @@ export function seedDemoCard(): SeedCard {
       postPrompt: '继续按上述输出格式回复，正文不少于 1500 字。',
     },
     worldbook: WORLDBOOK,
-    memory: { parser: 'details-v1', recentLimit: 4, stripFromHistory: true, archive: 'concat' },
+    memory: { parser: 'details-v1', recentLimit: 6, stripFromHistory: true, archive: 'concat' },
   };
 }

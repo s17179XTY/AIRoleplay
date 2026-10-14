@@ -13,6 +13,15 @@ export interface ChatRequest {
   messages: ChatMessage[];
   params: ModelParams;
   capabilities: ModelCapability;
+  /** 使用者按「停止」時會被 abort：串流要立刻收手，而且**不能**把它當成錯誤回報 */
+  signal?: AbortSignal;
+}
+
+/** 使用者主動停止（AbortController）與真正的連線失敗要分得開，否則「停止」會變成紅色錯誤訊息 */
+export function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const name = (err as { name?: unknown }).name;
+  return name === 'AbortError' || name === 'TimeoutError';
 }
 export type StreamEvent =
   | { type: 'text'; delta: string }

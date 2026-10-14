@@ -57,6 +57,9 @@ export interface ConfigRecord {
   id: string; scope: ConfigScope; refId: string | null; memoryLimit: number;
   prePrompt: string; postPrompt: string; prompt: string;
 }
+
+/** 未設定時的記憶保留條數（使用者明確要求預設 6 條） */
+export const DEFAULT_MEMORY_LIMIT = 6;
 export interface CardUiStateRecord { cardId: string; key: string; value: string; }
 export interface SettingRecord { key: string; value: string; }
 

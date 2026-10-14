@@ -2,12 +2,33 @@ import { describe, it, expect } from 'vitest';
 import { draftToPackage, newRegexScript, newWorldbookEntry, packageToDraft } from './draft';
 import { packCard, unpackCard } from '../../core/cards/package';
 import { seedPackage } from '../../core/storage/seedPackage';
+import type { CardPackage } from '../../core/cards/package';
+
+/**
+ * 內置卡的世界書刻意是空的（世界觀由互動頁決定），
+ * 所以「世界書往返」的測試要自己塞一份進去，不能靠內置卡帶資料。
+ */
+function withWorldbook(base = seedPackage()): CardPackage {
+  const file = base.texts.find((t) => t.path === 'worldbook.json');
+  const entries = [
+    {
+      id: 'wb-test', keys: ['测试'], secondaryKeys: [], content: '测试条目',
+      constant: false, selective: false, position: 'before-char' as const,
+      order: 0, depth: 4, recursive: false, enabled: true,
+    },
+  ];
+  const text = JSON.stringify({ version: 1, entries });
+  if (file) file.text = text;
+  else base.texts.push({ path: 'worldbook.json', text });
+  base.json.worldbook = 'worldbook.json';
+  return base;
+}
 
 describe('卡片草稿', () => {
   it('包 → 草稿 → 包 往返保留世界书与界面', () => {
-    const base = seedPackage();
+    const base = withWorldbook();
     const draft = packageToDraft(base);
-    expect(draft.worldbook.length).toBeGreaterThan(0);
+    expect(draft.worldbook).toHaveLength(1);
     expect(draft.uiHtml).toContain('generated-content-preview');
     draft.worldbook.push(newWorldbookEntry(99));
     draft.regex.push(newRegexScript(0));

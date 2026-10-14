@@ -5,6 +5,7 @@ import CardEditorScreen from './cards/CardEditorScreen';
 import SettingsScreen from './settings/SettingsScreen';
 import { useNav } from '../state/useNav';
 import { useSetting } from '../state/useSetting';
+import { useSync } from '../state/useSync';
 
 const TABS: { key: 'cards' | 'play' | 'settings'; label: string; icon: string }[] = [
   { key: 'cards', label: '卡片', icon: '📚' },
@@ -18,7 +19,17 @@ export default function AppShell() {
   const editingCardId = useNav((s) => s.editingCardId);
   const setTab = useNav((s) => s.setTab);
   const toast = useNav((s) => s.toast);
+  const refreshSync = useSync((s) => s.refresh);
   const [fontScale] = useSetting('fontScale', '16');
+
+  /**
+   * 啟動時就跑一次登入狀態檢查。
+   * 一定要在 AppShell（而不是只放在設定頁）：若 token 還在，這裡會把連線切回帳號專屬的庫，
+   * 否則重新載入頁面後看到的是未登入那一份資料，使用者會以為同步過的資料全沒了。
+   */
+  useEffect(() => {
+    refreshSync();
+  }, [refreshSync]);
 
   // 正文字号全局生效：设置页点一下，聊天里的气泡与折叠面板立刻变
   useEffect(() => {

@@ -124,7 +124,7 @@ describe('blob 引擎', () => {
     expect(await ensureBlobUploaded({ db, client, dek, deviceId: 'dev_a' }, 'chat', 'chat_1')).toBeNull();
   });
 
-  it('B 裝置拉取後只是佔位，真的要用時才下載並解密', async () => {
+  it('B 裝置拉取後會自動把 blob 補回本地（新裝置打開卡片就有互動頁）', async () => {
     const { client, dek } = await account();
     const dbA = await device(`blob-d1-${rnd()}`);
     const dbB = await device(`blob-d2-${rnd()}`);
@@ -133,12 +133,13 @@ describe('blob 引擎', () => {
     await pushPending({ db: dbA, client, dek, deviceId: 'dev_a' });
 
     await pullChanges({ db: dbB, client, dek, deviceId: 'dev_b' });
-    const placeholder = await dbB.cardFiles.get(['c1', 'ui/index.html']);
-    expect(placeholder?.text ?? '').toBe(''); // 拉到的只有信封
-    expect((await dbB.blobState.toArray())[0].state).toBe('remote');
+    // 信封只有中繼資料，本體是拉完之後由 fetchRemoteBlobs 補上的
+    expect((await dbB.cardFiles.get(['c1', 'ui/index.html']))?.text?.length).toBe(BIG);
+    expect((await dbB.blobState.toArray())[0].state).toBe('uploaded');
 
+    // 本地已經有明文時，ensureBlobLocal 不重複下載
     const outcome = await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'cardFile', 'c1:ui/index.html');
-    expect(outcome).toBe('fetched');
+    expect(outcome).toBe('have');
     expect((await dbB.cardFiles.get(['c1', 'ui/index.html']))?.text?.length).toBe(BIG);
     expect(await getRev(dbB, 'cardFile', 'c1:ui/index.html')).toBe(1); // 下載不該改動版本
     expect(await pendingCount(dbB)).toBe(0); // 下載也不該產生待推送
@@ -150,17 +151,26 @@ describe('blob 引擎', () => {
     const dbB = await device(`blob-e2-${rnd()}`);
     await dbA.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text: 'w'.repeat(BIG) });
     await pushPending({ db: dbA, client, dek, deviceId: 'dev_a' });
-    await pullChanges({ db: dbB, client, dek, deviceId: 'dev_b' });
 
-    const blobId = (await dbB.blobState.toArray())[0].blobId;
+    // 手動在 B 造出「只有信封」的狀態：明文還沒抓回來，只有 blobId 與 fileKey
+    const source = (await dbA.blobState.toArray())[0];
+    await dbB.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html' });
+    await dbB.blobState.put({
+      blobId: source.blobId, kind: 'cardFile', state: 'remote',
+      refId: 'c1:ui/index.html', size: source.size, fileKey: source.fileKey,
+    });
+
     const kv = testKV(env);
     for (const key of kv.keys()) kv.setVisible(key, false); // 全部假裝還沒傳播
 
     expect(await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'cardFile', 'c1:ui/index.html')).toBe('pending');
-    expect(await dbB.blobState.get(blobId)).toBeTruthy();
+    expect(await dbB.blobState.get(source.blobId)).toBeTruthy();
+    // pending 時仍要保住本地參照，否則就再也補不回來了
+    expect((await dbB.blobState.get(source.blobId))?.fileKey).toBe(source.fileKey);
 
     for (const key of kv.keys()) kv.setVisible(key, true);
     expect(await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'cardFile', 'c1:ui/index.html')).toBe('fetched');
+    expect((await dbB.cardFiles.get(['c1', 'ui/index.html']))?.text?.length).toBe(BIG);
   });
 
   it('本地已有明文時 ensureBlobLocal 直接回 have（不重複下載）', async () => {
@@ -183,8 +193,10 @@ describe('blob 引擎', () => {
     expect(record?.blob_ref).toBeTruthy();
 
     await pullChanges({ db: dbB, client, dek, deviceId: 'dev_b' });
-    expect((await dbB.assets.get('img_1'))?.bytes).toBeUndefined(); // 只有中繼資料
-    expect(await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'assetMeta', 'img_1')).toBe('fetched');
+    // 信封只帶中繼資料，本體由拉取後的 fetchRemoteBlobs 補回來
+    const restored = await dbB.assets.get('img_1');
+    expect(restored?.bytes).toBeTruthy();
+    expect(await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'assetMeta', 'img_1')).toBe('have');
 
     const back = new Uint8Array((await dbB.assets.get('img_1'))!.bytes);
     expect(back.length).toBe(5000);

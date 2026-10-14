@@ -74,7 +74,7 @@ async function uploadBlob(
 
   const { fileKey, body } = await encryptBlob(ctx.dek, blobId, plaintext);
   await ctx.client.putBlob(blobId, body);
-  await ctx.db.blobState.put({ blobId, state: 'uploaded', refId: id, size: plaintext.byteLength, fileKey });
+  await ctx.db.blobState.put({ blobId, kind: kind as 'assetMeta' | 'cardFile', state: 'uploaded', refId: id, size: plaintext.byteLength, fileKey });
   return { blobId, fileKey, size: plaintext.byteLength };
 }
 
@@ -92,7 +92,7 @@ export async function ensureBlobLocal(
   const plaintext = await plaintextOf(ctx.db, kind, id);
   if (plaintext && plaintext.byteLength > 0) return 'have';
 
-  const state = (await ctx.db.blobState.toArray()).find((s) => s.refId === id && s.blobId);
+  const state = (await ctx.db.blobState.where('refId').equals(id).toArray()).find((s) => s.blobId);
   if (!state?.fileKey) return 'pending';
 
   const body = await ctx.client.getBlob(state.blobId);
