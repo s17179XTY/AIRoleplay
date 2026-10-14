@@ -118,6 +118,12 @@ describe('恢復碼救援', () => {
     expect((await handleRecoverStart(ctx.env, { username: USER, recoveryAuthKey: 'nope' }, 2000)).status).toBe(401);
   });
 
+  it('驗證通過後回傳 recoveryWrappedDek（客戶端要靠它解出 DEK）', async () => {
+    const res = await handleRecoverStart(ctx.env, { username: USER, recoveryAuthKey: 'recovery-old' }, 2000);
+    expect(res.status).toBe(200);
+    expect(res.body.recoveryWrappedDek).toBe('recovery-wrapped-old');
+  });
+
   it('帳號不存在也回同一句話（不洩漏帳號是否存在）', async () => {
     const a = await handleRecoverStart(ctx.env, { username: 'nobody', recoveryAuthKey: 'x' }, 2000);
     expect(a.status).toBe(401);

@@ -44,6 +44,12 @@ export interface SyncActions {
   loadDevices(seams?: SyncSeams): Promise<void>;
   revokeDevice(id: string, seams?: SyncSeams): Promise<void>;
   dismissConflicts(): Promise<void>;
+  /** 改密碼：重新包一份 DEK 與恢復碼（舊恢復碼即刻失效），回傳新的恢復碼供 UI 顯示 */
+  changePassword(currentPassword: string, nextPassword: string, seams?: SyncSeams): Promise<{ recoveryCode: string }>;
+  /** 忘記密碼：用恢復碼解出 DEK、換上新密碼並直接登入 */
+  recoverAccount(
+    input: { username: string; recoveryCode: string; newPassword: string } & SyncSeams,
+  ): Promise<{ recoveryCode: string }>;
 }
 
 const INITIAL: SyncUiState = {
@@ -268,5 +274,71 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
   async dismissConflicts() {
     await db.syncConflicts.clear();
     set({ conflicts: 0, message: null });
+  },
+
+  async changePassword(currentPassword, nextPassword, seams = {}) {
+    const name = get().username;
+    if (!name || !currentDek) throw new Error('尚未解鎖，請輸入密碼');
+    const currentKdf = seams.kdf ?? loadKdf(name) ?? PROD_KDF;
+    const nextKdf = seams.kdf ?? PROD_KDF;
+    try {
+      const client = makeClient(seams);
+      const masterKey = await deriveMasterKey(nextPassword, name, nextKdf);
+      const recoveryCode = generateRecoveryCode();
+      await client.changePassword({
+        oldAuthKey: await deriveAuthKey(currentPassword, name, currentKdf),
+        newAuthKey: await deriveAuthKey(nextPassword, name, nextKdf),
+        newKdf: JSON.stringify(nextKdf),
+        newWrappedDek: await wrapDek(currentDek, masterKey),
+        newRecoveryAuthKey: await deriveRecoveryAuthKey(recoveryCode, name),
+        newRecoveryWrappedDek: await wrapDek(currentDek, await deriveRecoveryKey(recoveryCode, name)),
+      });
+      // 本地記住的 KDF 參數要換成新的，否則下次登入會用舊參數算出對不上的 authKey
+      saveKdf(name, nextKdf);
+      set({ status: 'idle', message: '密码已更新，请抄下新的恢复码（旧的已失效）' });
+      return { recoveryCode };
+    } catch (err) {
+      set({ status: 'error', message: errorMessage(err) });
+      throw err;
+    }
+  },
+
+  async recoverAccount({ username, recoveryCode, newPassword, ...seams }) {
+    const name = username.trim().toLowerCase();
+    const newKdf = seams.kdf ?? PROD_KDF;
+    try {
+      const client = makeClient(seams);
+      const recoveryKey = await deriveRecoveryKey(recoveryCode, name);
+      const start = await client.recoverStart({
+        username: name,
+        recoveryAuthKey: await deriveRecoveryAuthKey(recoveryCode, name),
+      });
+
+      // 用恢復碼解出 DEK，再用新密碼重新包一份
+      const dek = await unwrapDek(start.recoveryWrappedDek, recoveryKey);
+      const newAuthKey = await deriveAuthKey(newPassword, name, newKdf);
+      const nextRecoveryCode = generateRecoveryCode();
+      await client.recoverFinish({
+        resetToken: start.resetToken,
+        newAuthKey,
+        newKdf: JSON.stringify(newKdf),
+        newWrappedDek: await wrapDek(dek, await deriveMasterKey(newPassword, name, newKdf)),
+        newRecoveryAuthKey: await deriveRecoveryAuthKey(nextRecoveryCode, name),
+        newRecoveryWrappedDek: await wrapDek(dek, await deriveRecoveryKey(nextRecoveryCode, name)),
+      });
+
+      // 救援完成後所有舊 session 都被撤銷了，直接用新密碼登入
+      currentDek = dek;
+      saveUsername(name);
+      saveKdf(name, newKdf);
+      await client.login({ username: name, authKey: newAuthKey, label: deviceLabel() });
+      await switchDatabase(dbNameFor(name));
+      set({ username: name, status: 'idle', message: null });
+      await get().runSync(seams);
+      return { recoveryCode: nextRecoveryCode };
+    } catch (err) {
+      set({ status: 'error', message: errorMessage(err) });
+      throw err;
+    }
   },
 }));

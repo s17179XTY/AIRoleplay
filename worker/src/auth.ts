@@ -340,9 +340,9 @@ export async function handleRecoverStart(env: Env, body: unknown, now = Date.now
     return fail(429, 'rate_limited', '伺服器忙，稍後自動重試');
   }
 
-  const user = await env.DB.prepare('SELECT id, recovery_hash, recovery_salt FROM users WHERE username = ?')
+  const user = await env.DB.prepare('SELECT id, recovery_hash, recovery_salt, recovery_wrapped_dek FROM users WHERE username = ?')
     .bind(username)
-    .first<{ id: string; recovery_hash: string; recovery_salt: string }>();
+    .first<{ id: string; recovery_hash: string; recovery_salt: string; recovery_wrapped_dek: string }>();
   if (!user) return fail(401, 'bad_recovery', '帳號名或恢復碼錯誤');
   if ((await pbkdf2Hex(recoveryAuthKey, user.recovery_salt)) !== user.recovery_hash) {
     return fail(401, 'bad_recovery', '帳號名或恢復碼錯誤');
@@ -353,7 +353,9 @@ export async function handleRecoverStart(env: Env, body: unknown, now = Date.now
     .bind(await sha256Hex(resetToken), user.id, now + 5 * 60 * 1000)
     .run();
 
-  return ok({ resetToken, expiresInSeconds: 300 });
+  // recovery_wrapped_dek 是被恢復碼衍生的金鑰加密的密文；客戶端必須拿它才解得出 DEK。
+  // 只有「已證明知道恢復碼」的請求才拿得到，所以不構成洩漏。
+  return ok({ resetToken, recoveryWrappedDek: user.recovery_wrapped_dek, expiresInSeconds: 300 });
 }
 
 /**

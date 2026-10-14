@@ -92,6 +92,14 @@ export interface DeviceInfo {
   current: boolean;
 }
 
+export interface CredentialUpdate {
+  newAuthKey: string;
+  newKdf: string;
+  newWrappedDek: string;
+  newRecoveryAuthKey: string;
+  newRecoveryWrappedDek: string;
+}
+
 export interface SyncClient {
   register(input: RegisterInput): Promise<AuthResult>;
   login(input: { username: string; authKey: string; label?: string }): Promise<AuthResult>;
@@ -104,6 +112,9 @@ export interface SyncClient {
   getBlob(blobId: string): Promise<Uint8Array | null>;
   devices(): Promise<DeviceInfo[]>;
   revokeDevice(id: string): Promise<void>;
+  changePassword(input: { oldAuthKey: string } & CredentialUpdate): Promise<void>;
+  recoverStart(input: { username: string; recoveryAuthKey: string }): Promise<{ resetToken: string; recoveryWrappedDek: string }>;
+  recoverFinish(input: { resetToken: string } & CredentialUpdate): Promise<void>;
 }
 
 interface CallOptions {
@@ -254,6 +265,20 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
     },
     async revokeDevice(id) {
       await call(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+    async changePassword(input) {
+      await call('/api/auth/password', { method: 'POST', body: input });
+    },
+    async recoverStart(input) {
+      const out = await call<{ resetToken: string; recoveryWrappedDek: string }>('/api/auth/recover/start', {
+        method: 'POST',
+        body: input,
+        auth: false,
+      });
+      return { resetToken: out.resetToken, recoveryWrappedDek: out.recoveryWrappedDek };
+    },
+    async recoverFinish(input) {
+      await call('/api/auth/recover/finish', { method: 'POST', body: input, auth: false });
     },
   };
 }
