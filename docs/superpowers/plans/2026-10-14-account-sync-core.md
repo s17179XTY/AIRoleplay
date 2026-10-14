@@ -4275,6 +4275,22 @@ git commit -m "test(worker): 對真實 wrangler dev 的端到端冒煙腳本"
    會噴 `The URL must be of scheme file`。改成用 `process.cwd()`（vitest 的工作目錄一律是專案根），
    統一收進 `worker/test/helpers/migration.ts`。
 
+## 待辦：個人資訊清理（**使用者指定：計畫二完成後執行**）
+
+以下內容目前已隨本檔推到公開 repo。清理時**不要把實際值寫進任何新提交**——直接刪掉或改成中性描述：
+
+| 位置 | 內容 | 處理 |
+|---|---|---|
+| `README.md` 第 19 行 | Cloudflare 帳號名稱（含使用者的 Gmail 地址） | 改成中性描述，例如「Cloudflare 帳號（見本機 `wrangler whoami`）」 |
+| `README.md` 第 32 行 | 倉庫路徑寫成使用者的 GitHub 帳號 | 改成 `<你的 GitHub 帳號>/AIRoleplay` |
+| 本檔第 4260 行附近 | 同一組帳號名稱 + D1 uuid | 只留「D1 已建立」，拿掉帳號名與 uuid |
+| `worker/wrangler.jsonc` | D1 `database_id`（資源 id，非個資） | 低風險，可保留；要更乾淨就改讀環境變數並在文件寫明取得方式 |
+| `git log` 的 `Initial commit` | 該 commit 的作者是使用者的另一個 email（GitHub 會顯示在 commit 列表與 contributors） | 要一起處理就得在重寫歷史時用 `--mail-map` 改寫 |
+
+**關鍵限制**：改檔案**不會**把上述內容從 git 歷史移除——舊 commit 的 blob 還在。
+真正清掉需要重寫歷史（`git filter-repo` 或 BFG + force-push，所有 commit hash 都會變），
+或把 repository 改成 private。重寫歷史會影響已 clone 的人，需使用者明確同意才做。
+
 ## 計畫完成後的狀態
 
 - 可以註冊（邀請碼）、登入、refresh、登出；session 可即時撤銷。
