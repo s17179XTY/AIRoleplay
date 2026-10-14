@@ -4251,6 +4251,14 @@ git commit -m "test(worker): 對真實 wrangler dev 的端到端冒煙腳本"
 6. **不要用 PowerShell 改檔案**：`Get-Content -Raw | Set-Content` 會把中文註解變成亂碼並吃掉換行
    （這次真的踩到，`outbox.ts` 整份重寫才救回來）。一律用 read / edit / write 工具。
 
+## 執行期間修正（M2，Task 7–11、16 實作時發現）
+
+1. **`migrations_dir` 不是頂層欄位**，它屬於 **binding 內部**（`d1_databases[].migrations_dir`）。放錯層級時 wrangler 會直接印 usage 並報 `Unknown arguments`，訊息完全指不到真正的原因。
+2. **`compatibility_date` 要用 `2026-10-13`，不能用當天（10-14）**：本機 workerd 二進位只支援到前一天，寫當天會起不來（`This Worker requires compatibility date ..., but the newest date supported by this server binary is ...`）。
+3. **這個環境的 `node` 是 DSH harness 的包裝腳本**（`harness\.desktop-bin\node.cmd`），它在某些參數型態下會竄改 argv（`--flag` 掉破折號、插入 `cli.js` 路徑）。後果：`npm run worker:dev` / `d1:migrate:*` 這些 npm script 在**本機**會失敗，但**寫法是對的**（一般機器上 `npm run` 走 node_modules/.bin 的 shim 沒問題）。本機要驗證時直接從 PowerShell 呼叫 `wrangler ...`（npm 產的 `.ps1` shim 內部寫的是 `node.exe`，會繞過包裝腳本），或明寫 `node.exe`。
+4. **R2 尚未啟用**：`wrangler r2 bucket create` 回 `code: 10042 Please enable R2 through the Cloudflare Dashboard`。這是帳號層級的開關（要你本人去 Dashboard 開，可能需綁付款方式），不影響本機開發（Miniflare 會模擬 R2）與 M2 驗收，但**計畫二的 blob 實際傳輸與 Worker 部署會卡在這一步**。
+5. **D1 已建立**：`dsh-sync`，uuid `611a1696-fcb8-4dda-a5c6-aac0f0b6356f`（帳號 `<cloudflare-account>'s Account`）。
+
 ## 計畫完成後的狀態
 
 - 可以註冊（邀請碼）、登入、refresh、登出；session 可即時撤銷。
