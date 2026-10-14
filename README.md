@@ -16,6 +16,8 @@
 
 ## 部署到 Cloudflare Pages
 
+**线上地址：https://air-roleplay.pages.dev**（Cloudflare 帐号 `<cloudflare-account>'s Account`，Pages 项目 `air-roleplay`，Direct Upload 方式）
+
 纯静态站点，没有 Functions、没有服务端依赖，构建产物就是 `dist/`。仓库里已经放好 Pages 需要的三个文件：
 
 | 文件 | 作用 |
@@ -32,15 +34,22 @@
 4. 环境变量（可选，`.nvmrc` 已足够）：`NODE_VERSION` = `22`
 5. Save and Deploy → 线上地址形如 `https://<项目名>.pages.dev`。之后每次 push 到 `main` 自动重新发布，其他分支自动出预览链接
 
-### 方式二：本地 wrangler 直接上传（不接 Git，手动发布）
+### 方式二：本地 wrangler 直接上传（不接 Git，手动发布）—— **本项目当前用的就是这条**
+
+线上地址：**https://air-roleplay.pages.dev**（Pages 项目 `air-roleplay`，Direct Upload；`wrangler pages project list` 可见）
 
     npm install
     npm run build
-    npx wrangler login                                            # 浏览器点一次 Allow
-    npx wrangler pages project create air-roleplay --production-branch=main
-    npx wrangler pages deploy dist --project-name=air-roleplay --branch=main
+    npm i -g wrangler@4                                           # 见下方注①，本机 npx 走不通
+    wrangler login                                                # 浏览器里点一次 Allow
+    wrangler pages project create air-roleplay --production-branch=main
+    wrangler pages deploy dist --project-name=air-roleplay --branch=main
 
-> 注意：**Direct Upload 项目不能事后改成 Git 集成**。想两种都要，就分别建两个 Pages 项目。
+改完代码重新发布：`npm run build && wrangler pages deploy dist --project-name=air-roleplay --branch=main`
+
+> 注①：`npx wrangler ...` 在本机会报 `Unknown arguments: ...\wrangler-dist\cli.js, login`（npm 11.12 的 npx 把脚本路径当成了多余参数）。装成全局命令 `wrangler` 就正常。
+> 注②：账号里若挂了多个 Cloudflare 帐号，先 `set CLOUDFLARE_ACCOUNT_ID=<account id>` 再执行，避免 wrangler 让你选。
+> 注③：**Direct Upload 项目不能事后改成 Git 集成**。想两种都要，就分别建两个 Pages 项目。
 
 ## 已实现
 
