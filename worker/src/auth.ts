@@ -237,3 +237,35 @@ export async function consumeQuota(
     .first<{ used_bytes: number; quota_bytes: number }>();
   return { allowed: false, used: current?.used_bytes ?? 0, limit: current?.quota_bytes ?? 0 };
 }
+
+/**
+ * 管理端產生邀請碼。明文碼只在回應裡出現一次，資料庫只存 sha256。
+ * 呼叫端（router）必須先驗 x-admin-secret。
+ */
+export async function handleCreateInvite(
+  env: Env,
+  adminSecret: string | null,
+  body: unknown,
+): Promise<ApiReply> {
+  if (!adminSecret || adminSecret !== env.ADMIN_SECRET) {
+    return fail(401, 'unauthorized', '請先登入');
+  }
+  const input = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
+  const note = typeof input.note === 'string' ? input.note : null;
+  const ttlDays = typeof input.ttlDays === 'number' ? input.ttlDays : null;
+  const now = Date.now();
+
+  const raw = randomToken(9)
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase()
+    .padEnd(12, 'X')
+    .slice(0, 12);
+  const code = `INV-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
+  const expiresAt = ttlDays === null ? null : now + ttlDays * 86400000;
+
+  await env.DB.prepare('INSERT INTO invites (code_hash, note, created_at, expires_at, used_by, used_at) VALUES (?,?,?,?,NULL,NULL)')
+    .bind(await sha256Hex(code), note, now, expiresAt)
+    .run();
+
+  return ok({ code, note, expiresAt });
+}
