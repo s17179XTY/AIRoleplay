@@ -35,7 +35,7 @@
   ▼
 dsh-sync-api（新增獨立 Worker，wrangler deploy，workers.dev 子域，不需要域名）
   ├─ D1：users / invites / sessions / records / changes / blobs / rate
-  └─ R2：blob 密文（素材圖、> 256 KiB 的文本）
+  └─ Workers KV：blob 密文（素材圖、> 256 KiB 的文本）
 ```
 
 - 靜態站與 API **各自獨立部署**，互不綁死。前端以建置變數 `VITE_SYNC_API` 取得 API base URL。
@@ -46,7 +46,7 @@ dsh-sync-api（新增獨立 Worker，wrangler deploy，workers.dev 子域，不�
 
 | 新增 | 職責 | 依賴 |
 |---|---|---|
-| `worker/` | 獨立 Worker：auth、邀請碼、增量同步、blob 收發 | D1、R2 |
+| `worker/` | 獨立 Worker：auth、邀請碼、增量同步、blob 收發 | D1、Workers KV |
 | `src/core/sync/crypto.ts` | 純函式：KDF、信封加解密、恢復碼包裝 | WebCrypto，**不 import React** |
 | `src/core/sync/client.ts` | HTTP 客戶端：重試、401 自動 refresh | fetch |
 | `src/core/sync/engine.ts` | 同步引擎：outbox 推送、游標拉取、衝突處理、blob 收發 | Dexie、crypto、client |
@@ -191,12 +191,21 @@ POST /api/sync/push
 
 ### 6.4 blob
 
-- 門檻：**文本 > 256 KiB 或任何二進位 → 走 blob**（D1 單行上限 2 MB，內建卡互動頁 1.25 MB 已貼紅線）。
-- `blobId = base64url(sha256(明文))`（內容定址，天然去重、免衝突）。
+- **儲存體：Workers KV**（不是 R2）。理由：R2 免費額度雖有 10 GB，但**啟用 R2 必須綁付款方式**（`code 10042`），
+  而 Workers KV 含在 Workers 免費方案內、不需要付款方式。KV 額度：1 GB / 帳號、**單值上限 25 MiB**、
+  讀 100k 次/日、**寫 1,000 次/日**。代價是**最終一致性**（寫入後全球生效最多 60 秒）與寫入次數上限，
+  兩者對「自己 + 幾個朋友」的規模都不構成問題。
+- 門檻：**文本 > 256 KiB 或任何二進位 → 走 blob**（D1 單行上限 2 MB，內建卡互動頁 1.25 MB 已貼紅線；
+  KV 的 25 MiB 單值上限讓大圖也放得下）。
+- `blobId = base64url(sha256(明文))`（內容定址，免衝突）；**KV key 用 `<userId>/<blobId>`**，
+  刻意不做跨帳號去重——否則「兩個使用者有同一個檔案」會從 key 就洩漏出去。
 - 檔案格式：`"DSHB1" | iv(12B) | AES-GCM(fileKey, iv, 明文, AAD=blobId)`；`fileKey` 用 DEK 包好、base64 放在信封的 `data.__fileKey`。
 - 流程：先推 `assetMeta` / `cardFile` 信封（帶 `blobRef`）→ `PUT /api/blob/:blobId` 上傳密文 → 本地 `blobState.state` 由 `local` 轉 `uploaded`。拉取端看到 `blobRef` 且本地沒有 → 顯示佔位，真正要用時才 `GET` 並解密寫進 `assets`。
-- 單檔上限 8 MiB；帳號配額預設 1 GiB（`quota_bytes`），超過回 `413` + 用量。
-- 回收：`records` 刪除時把對應 `blobs.ref_count` 減一，歸零就刪 R2 物件並扣回 `used_bytes`。
+- **最終一致性的處理**：`GET` 拿不到（剛寫入還沒傳播）要當「稍後重試」而不是錯誤——引擎退避重試，
+  UI 顯示「下載中」，不得把 blob 標成失敗或刪掉本地參照。
+- 單檔上限 8 MiB（KV 允許 25 MiB，我們自己收在 8 MiB）；帳號配額預設 **512 MB**（`quota_bytes`）——
+  比單帳號 1 GiB 小，免得一個帳號吃掉整個 namespace。超過回 `413` + 用量。
+- 回收：`records` 刪除時把對應 `blobs.ref_count` 減一，歸零就刪 KV 的 key 並扣回 `used_bytes`。
 
 ### 6.5 outbox（離線佇列）
 
@@ -274,8 +283,8 @@ if (c && !c.subtle) Object.defineProperty(c, 'subtle', { value: webcrypto.subtle
 （只補 `subtle`、不整顆換掉 `crypto`，是為了保住 jsdom 的 `randomUUID`／`getRandomValues`，`newId()` 仰賴它們。）
 
 - `crypto.ts` 純函式單元測試：加解密往返、AAD 防搬移（換 id 必失敗）、錯 key 必失敗、恢復碼往返、KDF 迭代數注入。
-- 同步引擎：**兩台假裝置**（兩個 Dexie 實例、不同 DB 名）+ 記憶體版 Worker handler + 假 D1/R2，驗證推送→拉取→解密一致、衝突留副本、墓碑、離線補推。
-- Worker 邏輯抽成純函式（`handleRegister(env, body)` 等）配薄的 D1/R2 adapter，**不引入 `@cloudflare/vitest-pool-workers`**。
+- 同步引擎：**兩台假裝置**（兩個 Dexie 實例、不同 DB 名）+ 記憶體版 Worker handler + 假 D1/KV，驗證推送→拉取→解密一致、衝突留副本、墓碑、離線補推。
+- Worker 邏輯抽成純函式（`handleRegister(env, body)` 等）配薄的 D1/KV adapter，**不引入 `@cloudflare/vitest-pool-workers`**。
 - 另有 smoke 腳本：`wrangler d1 migrations apply --local` + `wrangler dev`，真打一輪註冊 → 推送 → 拉取。
 - UI 改動照 `AGENTS.md`：無頭 Chrome + CDP 實測（沿用 `shots/` 既有腳本）。
 
@@ -286,7 +295,7 @@ if (c && !c.subtle) Object.defineProperty(c, 'subtle', { value: webcrypto.subtle
 | M1 | `crypto.ts`、`kinds.ts`、jsdom polyfill、`db.ts` 可換庫 + 前置掃描 | 加密往返測試綠；既有 93 用例不受影響 |
 | M2 | Worker + D1 migrations + 註冊 / 登入 / 邀請碼 / refresh / 限流 | smoke 腳本對 `wrangler dev` 跑通 |
 | M3 | 同步引擎 records（游標 / LWW / outbox / 首次全量） | 兩假裝置端到端一致測試 |
-| M4 | blob / R2（大檔、素材圖、懶載入、配額） | 1.25 MiB 卡片頁往返成功 |
+| M4 | blob / Workers KV（大檔、素材圖、懶載入、配額） | 1.25 MiB 卡片頁往返成功 |
 | M5 | UI（帳號分節、恢復碼、狀態、衝突、裝置、配額） | CDP 截圖 + 未登入行為不變 |
 | M6 | 改密碼重包 DEK、恢復碼救援 | 忘密碼情境實測救回 |
 | M7 | 文件：`AGENTS.md` 硬約束改寫、README 補 Worker 部署 | 文件與實作一致 |
@@ -318,5 +327,6 @@ if (c && !c.subtle) Object.defineProperty(c, 'subtle', { value: webcrypto.subtle
 - 低階手機 600k 迭代可能 2–3 秒；必要時降到 310k 或改 Argon2id wasm（`kdf` 描述子已預留升級）。
 - 兩台同時編輯同一張卡會靜默 LWW 覆蓋（本地留副本，但不做 UI 合併）。
 - D1 免費方案每次呼叫 50 條查詢上限、單行 2 MB；批次與 blob 門檻即為此設計。
-- 免費額度：D1 每庫 500 MB / 每帳號 5 GB；R2 10 GB 儲存。超出的用量需要付費。
+- 免費額度：D1 每庫 500 MB / 每帳號 5 GB；Workers KV 每帳號 1 GB 且**每日寫入上限 1,000 次**。超出的用量需要付費方案。
+- KV 是**最終一致**：剛上傳的 blob 可能數十秒內在別的節點讀不到（見 §6.4 的重試要求）。
 - 匿名庫「認領」是單向操作，重複註冊不同帳號不會互相污染（DB 名隔離），但匿名資料只會被第一個註冊的帳號帶走。

@@ -4300,7 +4300,8 @@ git commit -m "test(worker): 對真實 wrangler dev 的端到端冒煙腳本"
 
 **還沒做，留給計畫二（M4–M7）**：
 
-1. **blob / R2 的實際傳輸**：目前 `assetMeta` 只送中繼資料，`PUT/GET /api/blob/:id` 還沒實作；素材圖與 >256 KiB 的卡片互動頁還沒真的搬。
+1. **blob 的實際傳輸（儲存體改用 Workers KV，不是 R2）**：目前 `assetMeta` 只送中繼資料，`PUT/GET /api/blob/:id` 還沒實作；
+   素材圖與 >256 KiB 的卡片互動頁還沒真的搬。改用 KV 的理由（R2 要綁付款方式）與實作要點見 spec §6.4。
 2. **`/api/auth/password`**（改密碼重包 DEK）與 **`/api/auth/recover/start|finish`**（恢復碼救援）——`resets` 表已建好但沒有 handler。
 3. **`GET/DELETE /api/devices`**（裝置列表與踢除）。
 4. **設定頁 UI**：帳號分節、恢復碼顯示與「我已抄下」、同步狀態、衝突清單、配額、裝置管理。
