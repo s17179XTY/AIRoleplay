@@ -8,6 +8,12 @@ import type {
 /** 待推送佇列：主鍵是 [kind+id]，所以同一筆改十次也只留一筆 */
 export interface OutboxRecord { kind: string; id: string; deleted: 0 | 1; queuedAt: number }
 export interface SyncStateRecord { key: string; value: string }
+/**
+ * 每筆記錄已同步到第幾個版本。
+ * 刻意**不放在記錄本身**（例如 row.__rev）：App 的正常寫入是整筆覆蓋，
+ * 會把附加欄位一起抹掉，於是第二次推送就誤判成衝突。放獨立表就沒這問題。
+ */
+export interface SyncRevRecord { kind: string; id: string; rev: number }
 export interface ConflictRecord {
   seq?: number; kind: string; id: string; rev: number; updatedAt: number; ciphertext: string; detectedAt: number;
 }
@@ -37,6 +43,7 @@ export class DshDB extends Dexie {
   settings!: Table<SettingRecord, string>;
   syncOutbox!: Table<OutboxRecord, [string, string]>;
   syncState!: Table<SyncStateRecord, string>;
+  syncRev!: Table<SyncRevRecord, [string, string]>;
   syncConflicts!: Table<ConflictRecord, number>;
   blobState!: Table<BlobStateRecord, string>;
 
@@ -61,6 +68,7 @@ export class DshDB extends Dexie {
     this.version(2).stores({
       syncOutbox: '[kind+id], kind',
       syncState: 'key',
+      syncRev: '[kind+id], kind',
       syncConflicts: '++seq, kind, id',
       blobState: 'blobId, state, refId',
     });

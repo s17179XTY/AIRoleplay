@@ -26,12 +26,13 @@ describe('可換庫的 db', () => {
     expect(currentDbName()).toBe('test-db-a');
   });
 
-  it('v2 多了四張同步用表，既有 13 張表還在', async () => {
+  it('v2 多了五張同步用表，既有 13 張表還在', async () => {
     const d = openDatabase('test-db-schema');
     await d.open();
     const names = d.tables.map((t) => t.name).sort();
     expect(names).toContain('syncOutbox');
     expect(names).toContain('syncState');
+    expect(names).toContain('syncRev');
     expect(names).toContain('syncConflicts');
     expect(names).toContain('blobState');
     expect(names).toContain('cards');
