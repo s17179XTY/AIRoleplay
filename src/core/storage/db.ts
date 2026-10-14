@@ -17,7 +17,18 @@ export interface SyncRevRecord { kind: string; id: string; rev: number }
 export interface ConflictRecord {
   seq?: number; kind: string; id: string; rev: number; updatedAt: number; ciphertext: string; detectedAt: number;
 }
-export interface BlobStateRecord { blobId: string; state: 'local' | 'uploaded' | 'remote'; refId: string; size: number }
+export interface BlobStateRecord {
+  blobId: string;
+  state: 'local' | 'uploaded' | 'remote';
+  refId: string;
+  size: number;
+  /**
+   * 用 DEK 包好的 fileKey（base64url）。
+   * 必須持久化後重用：blobId 是內容定址，但密文取決於隨機 fileKey；
+   * 重試時若換一把新鑰匙，先前已經推上雲的信封就永遠解不開。
+   */
+  fileKey?: string;
+}
 
 export const DEFAULT_DB_NAME = 'dsh-roleplay';
 

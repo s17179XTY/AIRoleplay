@@ -2,6 +2,7 @@ import type { DshDB } from '../storage/db';
 import { decryptEnvelope, encryptEnvelope, type Envelope } from './envelope';
 import { keyOf, SYNC_TABLES, sanitizeForSync, type SyncKind } from './kinds';
 import { clearOutbox, setApplyingRemote, takeOutbox, type OutboxEntry } from './outbox';
+import { ensureBlobUploaded, needsBlob, plaintextOf } from './blobs';
 import type { PulledRecord, SyncClient } from './client';
 
 export interface EngineContext {
@@ -95,12 +96,25 @@ export async function pushPending(
 
     const baseRev = await getRev(ctx.db, entry.kind, entry.id);
     const rev = baseRev + 1;
+
+    // 大檔／二進位先確保 blob 已經在雲端，信封只帶 blobRef 與（用 DEK 包好的）fileKey
+    const plaintext = await plaintextOf(ctx.db, entry.kind, entry.id);
+    const blob = plaintext && needsBlob(entry.kind, plaintext) ? await ensureBlobUploaded(ctx, entry.kind, entry.id) : null;
+
+    const data = sanitizeForSync(entry.kind, row);
+    if (blob) {
+      data.__fileKey = blob.fileKey;
+      // 內容已經在 blob 裡，信封不能再帶一份——否則又會撞上 D1 單行 2 MB / 我們自己 256 KiB 的上限
+      delete data.text;
+      delete data.bytes;
+    }
+
     const envelope: Envelope = {
       v: 1,
       rev,
       updatedAt: Date.now(),
       deviceId: ctx.deviceId,
-      data: sanitizeForSync(entry.kind, row),
+      data,
     };
     const ciphertext = await encryptEnvelope(ctx.dek, entry.kind, entry.id, envelope);
     payloadRecords.push({
@@ -111,6 +125,7 @@ export async function pushPending(
       updatedAt: envelope.updatedAt,
       size: ciphertext.length,
       ciphertext,
+      blobRef: blob?.blobId,
     });
     sent.push(entry);
   }
@@ -197,11 +212,15 @@ export async function applyRemoteRecord(
   }
 
   if (record.blobRef) {
+    const existing = await ctx.db.blobState.get(record.blobRef);
+    const fileKey = (envelope.data as { __fileKey?: string }).__fileKey;
     await ctx.db.blobState.put({
       blobId: record.blobRef,
       state: 'remote',
       refId: record.id,
       size: record.size ?? 0,
+      // 本地已有的 fileKey 優先保留：拉到的信封若沒帶（舊資料）也不能把能用的鑰匙弄丟
+      fileKey: fileKey ?? existing?.fileKey,
     });
   }
   return 'applied';
