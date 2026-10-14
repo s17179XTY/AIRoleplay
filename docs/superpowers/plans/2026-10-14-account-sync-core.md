@@ -4259,6 +4259,22 @@ git commit -m "test(worker): 對真實 wrangler dev 的端到端冒煙腳本"
 4. **R2 尚未啟用**：`wrangler r2 bucket create` 回 `code: 10042 Please enable R2 through the Cloudflare Dashboard`。這是帳號層級的開關（要你本人去 Dashboard 開，可能需綁付款方式），不影響本機開發（Miniflare 會模擬 R2）與 M2 驗收，但**計畫二的 blob 實際傳輸與 Worker 部署會卡在這一步**。
 5. **D1 已建立**：`dsh-sync`，uuid `611a1696-fcb8-4dda-a5c6-aac0f0b6356f`（帳號 `<cloudflare-account>'s Account`）。
 
+## 執行期間修正（M3，Task 12–15 實作時發現）
+
+1. **已同步版本不能存在記錄裡**（計畫原本用 `row.__rev`）。App 的正常寫入是「整筆覆蓋」，
+   一寫就把 `__rev` 抹掉，於是第二次推送的 `baseRev` 變回 0、被伺服器判成衝突——
+   **第一次推送後再編輯就永遠衝突**。測試直接把這個缺陷抓出來。改成獨立表 `syncRev([kind+id])`，
+   App 的寫入再也碰不到它，信封也不必再帶本地欄位。
+2. **多裝置測試要用 `openDatabase`，不能用 `switchDatabase`**：後者會 `close()` 掉前一個連線，
+   兩個裝置的測試會在第二台建立時把第一台關掉（`DatabaseClosedError`）。
+   `openDatabase` 不關舊連線，剛好符合「同一台機器上開兩個庫」的情境。
+3. **又踩到一次隨機失敗的斷言**：`expect(ciphertext).not.toContain('18')`——
+   base64url 密文湊出 "18" 的機率不低。短字串一律不比對；要驗「真的加密了」就改成
+   **解密往返斷言**（解出來的明文等於原本那筆），比掃字串強得多。
+4. **`import.meta.url` 在 vitest 的 jsdom 環境不是 `file:` scheme**，`new URL('../migrations/...')`
+   會噴 `The URL must be of scheme file`。改成用 `process.cwd()`（vitest 的工作目錄一律是專案根），
+   統一收進 `worker/test/helpers/migration.ts`。
+
 ## 計畫完成後的狀態
 
 - 可以註冊（邀請碼）、登入、refresh、登出；session 可即時撤銷。
