@@ -103,6 +103,21 @@ describe('blob 引擎', () => {
     expect(after.blobId).toBe(before.blobId);
   });
 
+  it('同一個 blob 併發上傳只會送一次（KV 對同一 key 每秒限 1 次寫入）', async () => {
+    const { client, dek } = await account();
+    const db = await device(`blob-race-${rnd()}`);
+    await db.assets.put({ id: 'img_r', mime: 'image/png', size: 4, bytes: new Uint8Array([1, 2, 3, 4]).buffer });
+
+    const ctx = { db, client, dek, deviceId: 'dev_a' };
+    const [a, b] = await Promise.all([
+      ensureBlobUploaded(ctx, 'assetMeta', 'img_r'),
+      ensureBlobUploaded(ctx, 'assetMeta', 'img_r'),
+    ]);
+    expect(a?.blobId).toBe(b?.blobId);
+    expect(a?.fileKey).toBe(b?.fileKey); // 共用同一個 promise → 不會產生兩把鑰匙
+    expect((await db.blobState.toArray()).filter((s) => s.refId === 'img_r')).toHaveLength(1);
+  });
+
   it('ensureBlobUploaded 對非 blob 種類回 null', async () => {
     const { client, dek } = await account();
     const db = await device(`blob-c2-${rnd()}`);

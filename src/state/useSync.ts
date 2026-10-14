@@ -8,6 +8,7 @@ import {
   generateRecoveryCode, PROD_KDF, type KdfParams,
 } from '../core/sync/kdf';
 import { generateDek, unwrapDek, wrapDek } from '../core/sync/envelope';
+import { canonicalInviteCode } from '../core/sync/invite';
 import { initialPush, syncNow, type EngineContext } from '../core/sync/engine';
 import { pendingCount } from '../core/sync/outbox';
 import { LOCAL_ONLY_TABLES } from '../core/sync/kinds';
@@ -154,7 +155,8 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       const anonymous = db;
       await client.register({
         username: name,
-        inviteCode,
+        // 手抄容易出錯：大小寫、漏破折號、夾帶空白或全角字元都在這裡收斂成正規形式
+        inviteCode: canonicalInviteCode(inviteCode),
         authKey,
         kdf: JSON.stringify(kdf),
         wrappedDek,

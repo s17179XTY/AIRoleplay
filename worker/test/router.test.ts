@@ -38,6 +38,59 @@ describe('router', () => {
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
 
+  it('预览部署网域（<hash>.air-roleplay.pages.dev）也放行——否则 Safari 只会显示 Load failed', async () => {
+    const env = makeTestEnv(MIGRATION_SQL);
+    const origin = 'https://7f63554d.air-roleplay.pages.dev';
+    const res = await route(new Request('https://api.example.com/api/me', { headers: { origin } }), env);
+    expect(res.headers.get('access-control-allow-origin')).toBe(origin);
+  });
+
+  it('本机与区网开发来源也放行（手机连 dev server 要用）', async () => {
+    const env = makeTestEnv(MIGRATION_SQL);
+    for (const origin of ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://192.168.1.126:5173', 'http://10.0.0.5:5173']) {
+      const res = await route(new Request('https://api.example.com/api/me', { headers: { origin } }), env);
+      expect(res.headers.get('access-control-allow-origin'), origin).toBe(origin);
+    }
+  });
+
+  it('不会误放行「长得像」的恶意来源', async () => {
+    const env = makeTestEnv(MIGRATION_SQL);
+    const bad = [
+      'https://air-roleplay.pages.dev.evil.com',
+      'https://evil-air-roleplay.pages.dev',
+      'http://192.168.1.126.evil.com:5173',
+      'ftp://192.168.1.126:5173',
+    ];
+    for (const origin of bad) {
+      const res = await route(new Request('https://api.example.com/api/me', { headers: { origin } }), env);
+      expect(res.headers.get('access-control-allow-origin'), origin).toBeNull();
+    }
+  });
+
+  it('處理器炸掉時回 500，而且帶 CORS 標頭（否則瀏覽器只會顯示 Load failed）', async () => {
+    const env = makeTestEnv(MIGRATION_SQL);
+    const broken = {
+      ...env,
+      DB: {
+        prepare() {
+          throw new Error('boom');
+        },
+      },
+    } as unknown as typeof env;
+    const worker = (await import('../src/index')).default;
+    const res = await worker.fetch(
+      new Request('https://api.example.com/api/me', {
+        // 要帶 token 才會真的去查資料庫（沒帶的話路由會在碰 DB 前就回 401）
+        headers: { origin: 'https://air-roleplay.pages.dev', authorization: 'Bearer whatever' },
+      }),
+      broken,
+    );
+    expect(res.status).toBe(500);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://air-roleplay.pages.dev');
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('internal');
+  });
+
   it('未帶 token 的 /api/sync/pull 回 401', async () => {
     const env = makeTestEnv(MIGRATION_SQL);
     const res = await route(new Request('https://api.example.com/api/sync/pull?cursor=0'), env);

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { makeTestD1 } from './helpers/d1';
 import { MIGRATION_SQL } from './helpers/migration';
 import { sha256Hex } from '../src/http';
+import { canonicalInviteCode } from '../src/invite';
 import { normalizeUsername, handleRegister } from '../src/auth';
 import type { Env } from '../src/types';
 
@@ -23,8 +24,16 @@ const body = (over: Record<string, unknown> = {}) => ({
 });
 
 async function seedInvite(env: Env, code: string, opts: { expiresAt?: number | null; used?: boolean } = {}) {
+  // 與真實產生器一致：以正規化後的碼為準
   await env.DB.prepare('INSERT INTO invites (code_hash, note, created_at, expires_at, used_by, used_at) VALUES (?,?,?,?,?,?)')
-    .bind(await sha256Hex(code), '給 alice', 1000, opts.expiresAt ?? null, opts.used ? 'someone' : null, opts.used ? 2000 : null)
+    .bind(
+      await sha256Hex(canonicalInviteCode(code)),
+      '給 alice',
+      1000,
+      opts.expiresAt ?? null,
+      opts.used ? 'someone' : null,
+      opts.used ? 2000 : null,
+    )
     .run();
 }
 
@@ -98,6 +107,28 @@ describe('handleRegister', () => {
     await seedInvite(env, 'INV-TEST-0001');
     expect((await handleRegister(env, { username: 'alice' })).status).toBe(400);
     expect((await handleRegister(env, body({ wrappedDek: '' }))).status).toBe(400);
+  });
+
+  it('邀请码容错：小写、少破折号、夹带空白或全角字元都能注册', async () => {
+    const variants = [
+      'inv-test-0001',
+      'INVTEST0001',
+      ' INV-TEST-0001 ',
+      'ＩＮＶ－ＴＥＳＴ－０００１',
+      '邀請碼：INV-TEST-0001 請收好',
+    ];
+    for (const [i, variant] of variants.entries()) {
+      const scoped = makeEnv();
+      await seedInvite(scoped, 'INV-TEST-0001');
+      const res = await handleRegister(scoped, body({ username: `user${i}`, inviteCode: variant }), 1000, `ip-${i}`);
+      expect(res.status, variant).toBe(200);
+    }
+  });
+
+  it('打錯字元仍然拒绝（容错不等于放水）', async () => {
+    await seedInvite(env, 'INV-TEST-0001');
+    const res = await handleRegister(env, body({ inviteCode: 'INV-TEST-0002' }));
+    expect(res.status).toBe(403);
   });
 
   it('同 IP 連續註冊超過 10 次會被限流（429）', async () => {

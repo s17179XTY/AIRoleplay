@@ -123,7 +123,11 @@
 | 前端调用新端点时服务器回「缺少必要欄位」 | store 里字段名写错（`recoveryAuthKey` vs `newRecoveryAuthKey`），测试跑得过但接口对不上 | **`npm run build` 的类型检查会抓到**——这就是「build 必须无错」不可跳过的原因 |
 | 冒烟脚本后半段全部 401 | 脚本前面已经 logout 撤销了 session，后面却继续用同一个 token | 冒烟脚本自己要在 logout 之后重新登入（`session` 变量），别复用死掉的 token |
 | 注册成功但用户说「没看到恢复码」 | 恢复码对话框原本写在「未登录」分支里，注册成功后组件立刻切到已登录分支 → 对话框消失 | 对话框必须挂在组件最外层（三个分支都带），否则等于永久失去救援能力；有测试守着 |
-| 本机 vite dev 打本机 Worker 被 CORS 挡 | `vars.ALLOWED_ORIGINS` 只列了 Pages 域名 | 把 `http://127.0.0.1:5173`、`http://localhost:5173` 一并列进去（已写进 `worker/wrangler.jsonc`） |
+| 本机 vite dev 打本机 Worker 被 CORS 挡 | `vars.ALLOWED_ORIGINS` 只列了 Pages 域名 | 本机来源、预览部署网域 `<hash>.air-roleplay.pages.dev`、区网 IP 都由 `isAllowedOrigin()` 模式匹配放行（`worker/src/router.ts`） |
+| **手机上注册/同步一律 `Load failed`，但登入正常** | **两个 bug 叠在一起**：① `blobs` 表主键只有 `blob_id`（全域唯一），逻辑却是「每使用者一份」——别人上传过同样内容（内容定址 → 同一 blobId，例如人人开局的內建卡片页）时，新使用者 INSERT 撞主键 → 500；② 最外层的 500 **没带 CORS 标头**，浏览器把整个回应丢掉，于是伺服器错误被伪装成网络错误。 | ① migration `0002_blobs_per_user.sql` 改成复合主键 `(user_id, blob_id)`，插入用 `INSERT OR IGNORE` + 变更数判断（并发安全、不重复扣配额）；② `index.ts` 的 catch 必须带 `corsHeaders(...)`。**教训：任何错误回应都要带 CORS 标头，否则你只会看到一个假的网络错误。** |
+| 同一个 KV key 被并发写入 | Cloudflare KV 对**同一个 key** 限制每秒 1 次写入 | 客户端 `ensureBlobUploaded` 用 in-flight map 合并同一个 blob 的上传；服务端 blob 路径也已幂等 |
+| 邀请码手抄打错就白费 | 资料库存的是 `sha256(码)`，差一个字元完全对不上 | 客户端与服务端都做 `canonicalInviteCode()`（NFKC → 大写 → 只留英数 → 每 4 字补破折号）；服务端同时试「正规范化」与「原样」两种杂湊，兼容早期或手塞的码 |
+| `wrangler d1 execute --json` 报 `code: 7403 未授权` | 这台机器上的 wrangler 走 `--json` 是另一条 API 路径 | 去掉 `--json` 就正常 |
 
 ## 7. 数据模型要点
 
@@ -137,7 +141,7 @@
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**49 个测试文件 / 273 个用例全绿**，构建通过。
+改之前先跑一遍确认基线：**50 个测试文件 / 289 个用例全绿**，构建通过。
 关键回归测试：装配顺序、世界书触发、记忆归档与回注、正则替换、白名单清洗（含 XSS 用例）、卡片 zip 往返、酒馆卡互转、卡片自愈、草稿态不落库、布局约束。
 同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、两装置端到端一致（`src/core/sync/integration.test.ts`）。
 后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs` 对 `wrangler dev` 冒烟。

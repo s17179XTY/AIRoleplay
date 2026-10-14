@@ -106,6 +106,61 @@ describe('blob 端點（KV）', () => {
     expect((await handleGetBlob(env, USER, 'blob_c')).status).toBe(200);
   });
 
+  it('併發上傳同一個 blob：只插一列、只扣一次配額、兩邊都成功', async () => {
+    const body = bytes(512);
+    const [a, b] = await Promise.all([
+      handlePutBlob(env, USER, 'blob_race', body.buffer.slice(0), 1000),
+      handlePutBlob(env, USER, 'blob_race', body.buffer.slice(0), 1001),
+    ]);
+
+    expect([a.status, b.status]).toEqual([200, 200]);
+    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM blobs').first<{ n: number }>();
+    expect(count?.n).toBe(1);
+    const user = await env.DB.prepare('SELECT used_bytes FROM users WHERE id = ?').bind(USER).first<{ used_bytes: number }>();
+    expect(user?.used_bytes).toBe(512);
+    expect((await handleGetBlob(env, USER, 'blob_race')).status).toBe(200);
+  });
+
+  it('三個併發上傳同一 blob 也安全（配額只算一次）', async () => {
+    const body = bytes(300);
+    const results = await Promise.all([
+      handlePutBlob(env, USER, 'blob_race3', body.buffer.slice(0), 2000),
+      handlePutBlob(env, USER, 'blob_race3', body.buffer.slice(0), 2001),
+      handlePutBlob(env, USER, 'blob_race3', body.buffer.slice(0), 2002),
+    ]);
+    expect(results.every((r) => r.status === 200)).toBe(true);
+    const user = await env.DB.prepare('SELECT used_bytes FROM users WHERE id = ?').bind(USER).first<{ used_bytes: number }>();
+    expect(user?.used_bytes).toBe(300);
+  });
+
+  it('不同使用者上傳同一個內容（同一個 blobId）互不影響——這正是先前註冊 500 的原因', async () => {
+    await env.DB.prepare(
+      'INSERT INTO users (id, username, kdf, auth_hash, auth_salt, wrapped_dek, recovery_wrapped_dek, recovery_hash, recovery_salt, quota_bytes, used_bytes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)',
+    )
+      .bind('u_2', 'bob', '{}', 'h', 's', 'w', 'rw', 'rh', 'rs', 1073741824, 1)
+      .run();
+
+    const body = bytes(500);
+    // A 先上傳（內容定址的 blobId 對所有人相同，例如每個人開局都會上傳的內建卡片頁）
+    expect((await handlePutBlob(env, USER, 'shared_blob', body.buffer.slice(0), 1000)).status).toBe(200);
+    // B 上傳同一份內容：以前會撞主鍵 → 500；現在每個使用者各有自己一列
+    const second = await handlePutBlob(env, 'u_2', 'shared_blob', body.buffer.slice(0), 1001);
+    expect(second.status).toBe(200);
+    expect(second.body.deduped).toBeUndefined();
+
+    const rows = await env.DB.prepare('SELECT user_id FROM blobs WHERE blob_id = ? ORDER BY user_id')
+      .bind('shared_blob')
+      .all<{ user_id: string }>();
+    expect(rows.results.map((r) => r.user_id)).toEqual([USER, 'u_2']);
+
+    // 兩人各自被計費一次，且各自的 KV key 都取得到內容
+    for (const uid of [USER, 'u_2']) {
+      const user = await env.DB.prepare('SELECT used_bytes FROM users WHERE id = ?').bind(uid).first<{ used_bytes: number }>();
+      expect(user?.used_bytes).toBe(500);
+      expect((await handleGetBlob(env, uid, 'shared_blob')).status).toBe(200);
+    }
+  });
+
   it('回收：ref_count 歸零就刪 KV 並扣回配額', async () => {
     await handlePutBlob(env, USER, 'blob_a', bytes(100).buffer, 1000);
     expect(testKV(env).keys()).toContain(blobKey(USER, 'blob_a'));

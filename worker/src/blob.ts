@@ -10,6 +10,11 @@ export function blobKey(userId: string, blobId: string): string {
   return `${userId}/${blobId}`;
 }
 
+/** 退還配額（寫 KV 失敗、或併發時發現別人已經插入了同一筆） */
+async function refundQuota(env: Env, userId: string, size: number): Promise<void> {
+  await env.DB.prepare('UPDATE users SET used_bytes = MAX(0, used_bytes - ?) WHERE id = ?').bind(size, userId).run();
+}
+
 export async function handlePutBlob(
   env: Env,
   userId: string,
@@ -33,17 +38,34 @@ export async function handlePutBlob(
     return fail(413, 'quota_exceeded', '雲端空間已滿', { quota: { used: quota.used, limit: quota.limit } });
   }
 
+  // 先把 KV 寫好再登記資料列：反過來的話，中途失敗會留下一筆有記錄但沒內容的 blob
   try {
     await env.BLOBS.put(blobKey(userId, blobId), bytes, { metadata: { size } });
   } catch (err) {
-    // 寫 KV 失敗要把配額還回去，否則配額會被慢慢吃掉
-    await env.DB.prepare('UPDATE users SET used_bytes = MAX(0, used_bytes - ?) WHERE id = ?').bind(size, userId).run();
+    await refundQuota(env, userId, size);
     throw err;
   }
 
-  await env.DB.prepare('INSERT INTO blobs (blob_id, user_id, size, created_at, ref_count) VALUES (?,?,?,?,1)')
+  /*
+   * 併發安全：兩個請求同時上傳同一個 blob（內容定址，很常見——例如兩次同步重疊）
+   * 會一起通過上面的「不存在」檢查。用 INSERT OR IGNORE 讓只有一個真的插入，
+   * 另一個把剛扣掉的配額退回去並回報 deduped。
+   * 先前這裡用普通 INSERT，第二個請求會撞 UNIQUE 約束 → 500 →（回應沒有 CORS 標頭）
+   * 瀏覽器只看到 “Load failed”，完全查不出原因。
+   */
+  const inserted = await env.DB.prepare(
+    'INSERT OR IGNORE INTO blobs (blob_id, user_id, size, created_at, ref_count) VALUES (?,?,?,?,1)',
+  )
     .bind(blobId, userId, size, now)
     .run();
+
+  if (Number(inserted.meta?.changes ?? 0) === 0) {
+    await refundQuota(env, userId, size);
+    const row = await env.DB.prepare('SELECT size FROM blobs WHERE blob_id = ? AND user_id = ?')
+      .bind(blobId, userId)
+      .first<{ size: number }>();
+    return ok({ blobId, size: row?.size ?? size, deduped: true });
+  }
 
   return ok({ blobId, size });
 }

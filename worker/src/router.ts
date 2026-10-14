@@ -7,9 +7,30 @@ import { fail, type ApiReply } from './http';
 import { handlePull, handlePush } from './sync';
 import type { Env } from './types';
 
-export function corsHeaders(env: Env, origin: string | null): Record<string, string> {
+/**
+ * 預覽部署（`https://<hash>.air-roleplay.pages.dev`）。
+ * 不能只列正式域名——預覽網址也是同一個專案、同一份 bundle，漏掉會讓登入直接被 CORS 擋掉
+ * （Safari 只會顯示 “Load failed”，完全看不出原因）。
+ */
+const PREVIEW_ORIGIN_RE = /^https:\/\/[a-z0-9-]+\.air-roleplay\.pages\.dev$/;
+
+/**
+ * 本機開發來源：`npm run dev` 會同時開 localhost 與區網 IP（手機要連同一個 Wi-Fi 測），
+ * 這些都只在本網段內，且 API 本來就要求 token，放行不增加風險。
+ */
+const LOCAL_DEV_ORIGIN_RE =
+  /^http:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?::\d+)?$/;
+
+export function isAllowedOrigin(env: Env, origin: string): boolean {
   const allowed = env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
-  if (!origin || !allowed.includes(origin)) return {};
+  if (allowed.includes(origin)) return true;
+  if (PREVIEW_ORIGIN_RE.test(origin)) return true;
+  if (LOCAL_DEV_ORIGIN_RE.test(origin)) return true;
+  return false;
+}
+
+export function corsHeaders(env: Env, origin: string | null): Record<string, string> {
+  if (!origin || !isAllowedOrigin(env, origin)) return {};
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',

@@ -10,6 +10,9 @@ import type { SyncKind } from './kinds';
  */
 export const MAX_BLOB_BATCH = 20;
 
+/** 進行中的上傳（key = db|kind|id），避免同一個 blob 被併發上傳 */
+const inFlightUploads = new Map<string, Promise<{ blobId: string; fileKey: string; size: number } | null>>();
+
 /** 只有這兩種 kind 會走 blob：素材圖（二進位）與卡片檔案（互動頁 HTML 可達 1.25 MiB） */
 export function isBlobBackedKind(kind: SyncKind): boolean {
   return kind === 'assetMeta' || kind === 'cardFile';
@@ -41,6 +44,21 @@ export function needsBlob(kind: SyncKind, plaintext: Uint8Array): boolean {
  * 已上傳過就直接重用既有的 fileKey（重試必須產生同一份密文，否則先前推上去的信封解不開）。
  */
 export async function ensureBlobUploaded(
+  ctx: EngineContext,
+  kind: SyncKind,
+  id: string,
+): Promise<{ blobId: string; fileKey: string; size: number } | null> {
+  // 同一個 blob 的上傳去重：兩次同步重疊時，不要對同一個 KV key 併發寫入
+  // （Cloudflare KV 對「同一個 key」限制每秒 1 次寫入，撞到會直接失敗）
+  const key = `${ctx.db.name}|${kind}|${id}`;
+  const running = inFlightUploads.get(key);
+  if (running) return running;
+  const task = uploadBlob(ctx, kind, id).finally(() => inFlightUploads.delete(key));
+  inFlightUploads.set(key, task);
+  return task;
+}
+
+async function uploadBlob(
   ctx: EngineContext,
   kind: SyncKind,
   id: string,

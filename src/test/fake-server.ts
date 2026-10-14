@@ -17,10 +17,11 @@ export function makeFakeServer(env: Env): typeof fetch {
   }) as typeof fetch;
 }
 
-/** 幫測試帳號種一張邀請碼（註冊流程要用） */
+/** 幫測試帳號種一張邀請碼（註冊流程要用）。存雜湊時與真實產生器一致：以正規化後的碼為準。 */
 export async function seedInvite(env: Env, code: string): Promise<void> {
   const { sha256Hex } = await import('../../worker/src/http');
+  const { canonicalInviteCode } = await import('../../worker/src/invite');
   await env.DB.prepare('INSERT INTO invites (code_hash, note, created_at, expires_at, used_by, used_at) VALUES (?,?,?,?,NULL,NULL)')
-    .bind(await sha256Hex(code), 'test', 1, null)
+    .bind(await sha256Hex(canonicalInviteCode(code)), 'test', 1, null)
     .run();
 }

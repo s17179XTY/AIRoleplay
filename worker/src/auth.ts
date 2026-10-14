@@ -1,4 +1,5 @@
 import { fail, ok, pbkdf2Hex, randomToken, sha256Hex, type ApiReply } from './http';
+import { canonicalInviteCode } from './invite';
 import { allow } from './rate';
 import type { Env } from './types';
 
@@ -79,14 +80,21 @@ export async function handleRegister(
     return fail(400, 'bad_body', '缺少必要欄位');
   }
 
-  const codeHash = await sha256Hex(inviteCode);
-  const invite = await env.DB.prepare('SELECT code_hash, expires_at, used_by FROM invites WHERE code_hash = ?')
-    .bind(codeHash)
+  // 兩種都試：正規化後的形式（使用者手抄容錯）與原樣（給早期或手動用 SQL 塞進來的碼）。
+  // 正規化會把 payload 依 4 個字元重新分組，長度非 4 倍數的舊碼會被改寫，所以不能只試一種。
+  const candidates = Array.from(new Set([canonicalInviteCode(inviteCode), inviteCode.trim()]));
+  const codeHashes = await Promise.all(candidates.map((c) => sha256Hex(c)));
+  const placeholders = codeHashes.map(() => '?').join(', ');
+  const invite = await env.DB.prepare(
+    `SELECT code_hash, expires_at, used_by FROM invites WHERE code_hash IN (${placeholders})`,
+  )
+    .bind(...codeHashes)
     .first<{ code_hash: string; expires_at: number | null; used_by: string | null }>();
   if (!invite || invite.used_by !== null) return fail(403, 'invite_invalid', '邀請碼無效或已被使用');
   if (invite.expires_at !== null && invite.expires_at < now) {
     return fail(403, 'invite_invalid', '邀請碼無效或已被使用');
   }
+  const codeHash = invite.code_hash;
 
   const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first<{ id: string }>();
   if (existing) return fail(409, 'username_taken', '這個帳號名已經有人用了');
