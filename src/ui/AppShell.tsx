@@ -14,6 +14,7 @@ const TABS: { key: 'cards' | 'play' | 'settings'; label: string; icon: string }[
 
 export default function AppShell() {
   const tab = useNav((s) => s.tab);
+  const editorOpen = useNav((s) => s.editorOpen);
   const editingCardId = useNav((s) => s.editingCardId);
   const setTab = useNav((s) => s.setTab);
   const toast = useNav((s) => s.toast);
@@ -25,12 +26,12 @@ export default function AppShell() {
   }, [fontScale]);
 
   const tabActive = (key: 'cards' | 'play' | 'settings') =>
-    tab === key && !editingCardId;
+    tab === key && !editorOpen;
 
   return (
     <div className="dsh-shell">
       <div className="min-h-0 flex-1">
-        {editingCardId ? (
+        {editorOpen ? (
           <CardEditorScreen cardId={editingCardId} />
         ) : tab === 'cards' ? (
           <CardListScreen />

@@ -25,7 +25,8 @@ textarea::-webkit-scrollbar { display: none; }
 
 body {
   margin: 0;
-  background: radial-gradient(120% 80% at 50% 0%, #eef1f7 0%, #e3e6ef 60%, #dfe3ec 100%);
+  overflow: hidden;
+  background: var(--dsh-bg);
   color: var(--dsh-ink);
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -33,27 +34,16 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-@media (min-width: 480px) {
-  body { display: flex; align-items: center; justify-content: center; }
-}
-
+/* 只做手机版式：铺满可用宽高，不做桌面多栏；页面自身永不滚动 */
 .dsh-shell {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 430px;
   height: 100%;
-  margin: 0 auto;
+  height: 100dvh;
   overflow: hidden;
   position: relative;
   background: var(--dsh-bg);
-}
-@media (min-width: 480px) {
-  .dsh-shell {
-    height: min(100%, 940px);
-    border-radius: 26px;
-    box-shadow: 0 24px 60px rgba(16, 24, 40, 0.16);
-  }
 }
 
 .dsh-card {

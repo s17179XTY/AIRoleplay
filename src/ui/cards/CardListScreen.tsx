@@ -3,7 +3,6 @@ import type { CardRecord } from '../../core/storage/types';
 import { deleteCard, ensureSeedCard, listCards, loadCardPackage, saveCardPackage } from '../../core/storage/cardRepo';
 import { packCard, unpackCard } from '../../core/cards/package';
 import { importStPng } from '../../core/cards/stCard';
-import { emptyCardJson } from '../../core/cards/spec';
 import { useNav } from '../../state/useNav';
 import { useSession } from '../../state/useSession';
 import { downloadBytes, readFileBytes } from './fileUtils';
@@ -50,12 +49,9 @@ export default function CardListScreen() {
     }
   };
 
-  const onCreate = async () => {
-    const json = emptyCardJson('新卡片');
-    json.firstMessage = '';
-    const id = await saveCardPackage({ json, texts: [], assets: [] });
-    await refresh();
-    openEditor(id);
+  const onCreate = () => {
+    // 只打开一张空白草稿，点了保存才真正创建
+    openEditor(null);
   };
 
   const onExport = async (cardId: string, name: string) => {
@@ -129,7 +125,7 @@ export default function CardListScreen() {
       </main>
 
       <div className="dsh-tabbar safe-bottom flex gap-2 px-3.5 py-3">
-        <button type="button" onClick={() => void onCreate()} className="dsh-btn-ghost flex-1 py-3 text-[13px]">
+        <button type="button" onClick={onCreate} className="dsh-btn-ghost flex-1 py-3 text-[13px]">
           新建卡片
         </button>
         <button

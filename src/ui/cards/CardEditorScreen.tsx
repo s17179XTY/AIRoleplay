@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadCardPackage, saveCardPackage } from '../../core/storage/cardRepo';
+import { emptyCardJson } from '../../core/cards/spec';
 import type { CardPackage } from '../../core/cards/package';
 import { draftToPackage, newRegexScript, newWorldbookEntry, packageToDraft, type CardDraft } from './draft';
 import { useNav } from '../../state/useNav';
@@ -17,18 +18,27 @@ const SECTIONS: { key: Section; label: string }[] = [
 
 const inputClass = 'dsh-input w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-[#0072e3]';
 
-export default function CardEditorScreen({ cardId }: { cardId: string }) {
+export default function CardEditorScreen({ cardId }: { cardId: string | null }) {
   const [base, setBase] = useState<CardPackage | null>(null);
   const [draft, setDraft] = useState<CardDraft | null>(null);
   const [section, setSection] = useState<Section>('basic');
   const [loadError, setLoadError] = useState<string | null>(null);
   const uiFileRef = useRef<HTMLInputElement>(null);
+  const savedIdRef = useRef<string | null>(cardId);
   const closeEditor = useNav((s) => s.closeEditor);
+  const openEditor = useNav((s) => s.openEditor);
   const showToast = useNav((s) => s.showToast);
   const reloadCard = useSession((s) => s.reloadCard);
 
   useEffect(() => {
     void (async () => {
+      if (!cardId) {
+        // 新建：先在内存里起草，点保存才写数据库
+        const fresh: CardPackage = { json: emptyCardJson('新卡片'), texts: [], assets: [] };
+        setBase(fresh);
+        setDraft(packageToDraft(fresh));
+        return;
+      }
       const pkg = await loadCardPackage(cardId);
       if (!pkg) {
         setLoadError('这张卡片的数据不完整（多半来自旧版本）。请返回卡片列表删除它，再重新导入或新建。');
@@ -37,7 +47,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
       setBase(pkg);
       setDraft(packageToDraft(pkg));
     })();
-  }, [cardId, closeEditor, showToast]);
+  }, [cardId, showToast]);
 
   const patchJson = useMemo(
     () => (patch: Partial<CardDraft['json']>) =>
@@ -60,11 +70,14 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
 
   const onSave = async () => {
     const pkg = draftToPackage(draft, base);
+    if (savedIdRef.current) pkg.json.id = savedIdRef.current;
     const id = await saveCardPackage(pkg);
+    savedIdRef.current = id;
     setBase(pkg);
     await reloadCard();
     showToast('已保存');
-    if (id !== cardId) closeEditor();
+    // 新建的卡片保存后转成「编辑已有卡片」，再次保存就是更新同一张
+    if (id !== cardId) openEditor(id);
   };
 
   return (

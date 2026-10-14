@@ -44,6 +44,8 @@ export function packageToDraft(pkg: CardPackage): CardDraft {
 
 export function draftToPackage(draft: CardDraft, base: CardPackage): CardPackage {
   const json: DshCardJson = JSON.parse(JSON.stringify(draft.json));
+  // 保留卡片身份：草稿里 id 为空时沿用 base 的 id，避免每次保存都新建一张
+  json.id = base.json.id || json.id || '';
   const texts = base.texts.filter(
     (t) => t.path !== json.worldbook && t.path !== json.regex
       && t.path !== json.ui?.entry && t.path !== json.promptTemplate,
