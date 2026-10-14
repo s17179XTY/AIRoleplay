@@ -9,7 +9,7 @@
 
     npm install
     npm run dev        # 打开手机视口访问 http://localhost:5173
-    npm run test       # 26 个测试文件 / 93 个用例
+    npm run test       # 42 个测试文件 / 201 个用例
     npm run build      # 类型检查 + 生产构建（产物在 dist/）
 
 首次打开会自动种下一张演示卡，直接就能玩（默认用 mock 模拟模型，不花钱）。
@@ -50,6 +50,24 @@
 > 注①：`npx wrangler ...` 在本机会报 `Unknown arguments: ...\wrangler-dist\cli.js, login`（npm 11.12 的 npx 把脚本路径当成了多余参数）。装成全局命令 `wrangler` 就正常。
 > 注②：账号里若挂了多个 Cloudflare 帐号，先 `set CLOUDFLARE_ACCOUNT_ID=<account id>` 再执行，避免 wrangler 让你选。
 > 注③：**Direct Upload 项目不能事后改成 Git 集成**。想两种都要，就分别建两个 Pages 项目。
+
+### 方式三：部署同步后端（可选；只有「登录 + 跨装置同步」需要）
+
+静态站本身不需要任何后端。要用账号功能时，后端是 `worker/` 里的**独立 Worker**（与 Pages 各自发布，互不绑定）：
+
+    wrangler login                                   # 浏览器里点一次 Allow
+    wrangler d1 create dsh-sync                      # 建库，把印出的 database_id 填进 worker/wrangler.jsonc
+    wrangler r2 bucket create dsh-sync-blobs         # 需先在 Dashboard 启用 R2，否则报 code 10042
+    npm run d1:migrate:remote                        # 建表
+    wrangler secret put ADMIN_SECRET                 # 邀请码管理端的口令
+    npm run worker:deploy
+    node worker/scripts/mint-invite.mjs "给 alice"    # 产生一次性邀请码
+
+本机开发**不需要部署**：`npm run d1:migrate:local` + `npm run worker:dev` 就能跑，R2 由 Miniflare 模拟。
+别忘了把 Pages 域名写进 `worker/wrangler.jsonc` 的 `vars.ALLOWED_ORIGINS`（CORS 白名单）。
+
+> Windows 提示：若 `npm run worker:*` 报 `Unknown arguments`，那是 npm 的 `.cmd` shim 传参问题
+> （本机 `node` 若是包装脚本就会踩到，脚本本身没错）。改从 PowerShell 直接执行 `wrangler ...` 即可。
 
 ## 账号与同步（核心已就绪）
 
@@ -141,6 +159,8 @@ M3（HTTP 客户端、同步引擎、两装置整合）已完成。
     src/core/providers/   适配内核：OpenAI 兼容、Anthropic、SSE、mock、能力矩阵
     src/core/storage/     存储内核：Dexie schema、卡片仓库、记忆、备份
     src/core/cards/       卡片规格、zip 打包、酒馆卡互转、模板、沙箱桥、正则
+    src/core/sync/        同步内核：KDF/信封加解密、blob、表↔信封映射、outbox 收敛点、HTTP 客户端、引擎
+    worker/               独立的 Cloudflare Worker：wrangler.jsonc + D1 migrations + src + test
     src/ui/               React 手机版界面（游玩 / 卡片列表 / 编辑器 / 交互界面 / 设置）
     src/state/            Zustand 状态（会话、导航、设置）
 
