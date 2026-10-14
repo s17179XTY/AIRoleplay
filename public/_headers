@@ -1,0 +1,23 @@
+# Cloudflare Pages：静态资源响应头
+# 只做缓存与最小安全头，不设 CSP（模型接口由用户自定义，CSP 会误伤）
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+# Vite 产物带内容 hash，可以永久缓存
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# 入口 HTML 与根路径必须每次回源校验，否则发新版用户拿不到新 bundle
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/manifest.webmanifest
+  Cache-Control: public, max-age=3600
+
+/icon.svg
+  Cache-Control: public, max-age=86400

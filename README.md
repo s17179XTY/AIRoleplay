@@ -9,10 +9,38 @@
 
     npm install
     npm run dev        # 打开手机视口访问 http://localhost:5173
-    npm run test       # 82 个测试
-    npm run build      # 类型检查 + 生产构建
+    npm run test       # 26 个测试文件 / 93 个用例
+    npm run build      # 类型检查 + 生产构建（产物在 dist/）
 
 首次打开会自动种下一张演示卡，直接就能玩（默认用 mock 模拟模型，不花钱）。
+
+## 部署到 Cloudflare Pages
+
+纯静态站点，没有 Functions、没有服务端依赖，构建产物就是 `dist/`。仓库里已经放好 Pages 需要的三个文件：
+
+| 文件 | 作用 |
+|---|---|
+| `public/_redirects` | SPA 回退：未命中静态资源的路径一律 `200` 返回 `index.html`，刷新 / 直达任意路径不会 404 白屏 |
+| `public/_headers` | 缓存策略：`/assets/*`（带内容 hash）永久缓存，入口 HTML 与 `/` 每次回源校验；附加 `nosniff`、`no-referrer`。**故意不设 CSP**——模型接口地址由用户自定义，CSP 会误伤直连 |
+| `.nvmrc` | 钉死 Node 22（Pages 构建镜像 v2 默认 22.16.0，Vite 6 要求 ≥ 22） |
+
+### 方式一：Dashboard 连接 Git（推荐；push 一次自动发布）
+
+1. Cloudflare Dashboard → **Workers & Pages** → Create application → **Pages** → **Import an existing Git repository**
+2. 授权 GitHub，选中仓库 `s17179XTY/AIRoleplay`；**Production branch** 填 `main`
+3. **Build command**：`npm run build`；**Build output directory**：`dist`（框架预设选 “React (Vite)” 就是这两个值）
+4. 环境变量（可选，`.nvmrc` 已足够）：`NODE_VERSION` = `22`
+5. Save and Deploy → 线上地址形如 `https://<项目名>.pages.dev`。之后每次 push 到 `main` 自动重新发布，其他分支自动出预览链接
+
+### 方式二：本地 wrangler 直接上传（不接 Git，手动发布）
+
+    npm install
+    npm run build
+    npx wrangler login                                            # 浏览器点一次 Allow
+    npx wrangler pages project create air-roleplay --production-branch=main
+    npx wrangler pages deploy dist --project-name=air-roleplay --branch=main
+
+> 注意：**Direct Upload 项目不能事后改成 Git 集成**。想两种都要，就分别建两个 Pages 项目。
 
 ## 已实现
 
