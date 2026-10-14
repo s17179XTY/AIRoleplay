@@ -41,8 +41,8 @@ describe('设置页', () => {
   it('全局配置可保存并读回', async () => {
     render(<SettingsScreen />);
     await waitFor(() => expect(screen.getByText('全局配置（对所有卡片生效）')).toBeTruthy());
-    const areas = screen.getAllByRole('textbox');
-    fireEvent.change(areas[0], { target: { value: '全局提示词内容' } });
+    // 用 aria-label 定位，不要用「第 0 個 textbox」——上面多了帳號分節就會指錯欄位
+    fireEvent.change(screen.getByLabelText('全局提示词'), { target: { value: '全局提示词内容' } });
     fireEvent.click(screen.getByText('保存全局配置'));
     await waitFor(async () => {
       const cfg = await db.configs.where('scope').equals('global').first();

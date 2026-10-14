@@ -13,6 +13,7 @@ import { newRegexScript } from '../cards/draft';
 import { useSetting } from '../../state/useSetting';
 import { useSession } from '../../state/useSession';
 import { useNav } from '../../state/useNav';
+import AccountSection from './AccountSection';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
 
@@ -175,10 +176,12 @@ export default function SettingsScreen() {
     <div className="flex h-full flex-col">
       <header className="dsh-header sticky top-0 z-10 px-4 pb-2.5 pt-3.5">
         <div className="text-[15px] font-semibold text-slate-800">设置</div>
-        <div className="text-[11px] text-slate-400">模型由你自己接入，数据全部留在本机</div>
+        <div className="text-[11px] text-slate-400">模型由你自己接入；数据默认留在本机，登录后可加密同步</div>
       </header>
 
       <main className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        <AccountSection />
+
         <section>
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-[13px] font-semibold text-slate-600">模型接入</h2>
@@ -329,22 +332,22 @@ export default function SettingsScreen() {
           <div className="space-y-2 rounded-2xl border border-black/10 bg-white p-3">
             <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">记忆设定（保留条数）</div>
-              <input type="number" className={inputClass} value={globalConfig.memoryLimit}
+              <input type="number" aria-label="记忆条数" className={inputClass} value={globalConfig.memoryLimit}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, memoryLimit: Number(e.target.value) })} />
             </label>
             <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">提示词</div>
-              <textarea className={inputClass} rows={4} value={globalConfig.prompt}
+              <textarea aria-label="全局提示词" className={inputClass} rows={4} value={globalConfig.prompt}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, prompt: e.target.value })} />
             </label>
             <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">前置词</div>
-              <textarea className={inputClass} rows={3} value={globalConfig.prePrompt}
+              <textarea aria-label="全局前置词" className={inputClass} rows={3} value={globalConfig.prePrompt}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, prePrompt: e.target.value })} />
             </label>
             <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">后置词</div>
-              <textarea className={inputClass} rows={3} value={globalConfig.postPrompt}
+              <textarea aria-label="全局后置词" className={inputClass} rows={3} value={globalConfig.postPrompt}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, postPrompt: e.target.value })} />
             </label>
             <button type="button" onClick={() => void onSaveGlobal()}
