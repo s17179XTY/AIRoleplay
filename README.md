@@ -51,6 +51,26 @@
 > 注②：账号里若挂了多个 Cloudflare 帐号，先 `set CLOUDFLARE_ACCOUNT_ID=<account id>` 再执行，避免 wrangler 让你选。
 > 注③：**Direct Upload 项目不能事后改成 Git 集成**。想两种都要，就分别建两个 Pages 项目。
 
+## 账号与同步（核心已就绪）
+
+账号、邀请码、零知识加密与同步引擎在 `src/core/sync/`，后端是独立的 Cloudflare Worker（`worker/`）。
+设计文档与里程碑见 `docs/superpowers/specs/2026-10-14-account-sync-design.md`，
+逐步实施计划见 `docs/superpowers/plans/2026-10-14-account-sync-core.md`。
+
+    npm run test -- src/core/sync                    # 只跑同步核心（含两装置整合测试）
+    npm run worker:dev                               # 本机起 Worker（需先 npm run d1:migrate:local）
+    node worker/scripts/mint-invite.mjs "给 alice"   # 产生一次性邀请码
+    node worker/smoke.mjs                            # 对 wrangler dev 打一轮端到端冒烟
+
+服务器全程看不到明文：云端只有 `ciphertext` 与 `kind / id / rev / 时间 / 大小`。
+`providers.apiKey` 与 `extraHeaders` 永远不会上传（有测试守着）。
+没登录时行为与纯本地版完全一致——同步是可选的加值，不是前提。
+
+**目前进度**：M1（加密层、账号分库、outbox）+ M2（Worker、认证、D1 端点、真 workerd 冒烟）+
+M3（HTTP 客户端、同步引擎、两装置整合）已完成。
+**还没做**：R2 的 blob 实际传输（素材图与 >256 KiB 的卡片互动页）、设置页的账号 UI、
+恢复码救援流程、改密码、以及 `AGENTS.md` 硬约束的修订。
+
 ## 已实现
 
 **卡片体系**
