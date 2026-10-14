@@ -1,6 +1,6 @@
 import {
-  authenticate, handleCreateInvite, handleListDevices, handleLogin, handleLogout, handleMe,
-  handleRefresh, handleRegister, handleRevokeDevice,
+  authenticate, handleChangePassword, handleCreateInvite, handleListDevices, handleLogin, handleLogout, handleMe,
+  handleRecoverFinish, handleRecoverStart, handleRefresh, handleRegister, handleRevokeDevice,
 } from './auth';
 import { handleGetBlob, handlePutBlob } from './blob';
 import { fail, type ApiReply } from './http';
@@ -63,6 +63,16 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
     return toResponse(await handleRefresh(env, await readJson(request), now), cors);
   }
 
+  if (path === '/api/auth/recover/start') {
+    if (method !== 'POST') return toResponse(fail(405, 'method_not_allowed', '方法不允許'), cors);
+    return toResponse(await handleRecoverStart(env, await readJson(request), now), cors);
+  }
+
+  if (path === '/api/auth/recover/finish') {
+    if (method !== 'POST') return toResponse(fail(405, 'method_not_allowed', '方法不允許'), cors);
+    return toResponse(await handleRecoverFinish(env, await readJson(request), now), cors);
+  }
+
   // blob 走二進位通道（不是 JSON）。順序與其他受保護路徑一致：先確認路徑形狀，再驗身分。
   const blobMatch = path.match(/^\/api\/blob\/([^/]+)$/);
   if (blobMatch) {
@@ -95,6 +105,7 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
     '/api/sync/pull': 'GET',
     '/api/sync/push': 'POST',
     '/api/devices': 'GET',
+    '/api/auth/password': 'POST',
   };
   const deviceMatch = path.match(/^\/api\/devices\/([^/]+)$/);
   if (deviceMatch) {
@@ -121,6 +132,10 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
 
   if (path === '/api/devices') {
     return toResponse(await handleListDevices(env, auth.userId, auth.sessionId), cors);
+  }
+
+  if (path === '/api/auth/password') {
+    return toResponse(await handleChangePassword(env, auth.userId, await readJson(request)), cors);
   }
 
   if (path === '/api/sync/pull') {

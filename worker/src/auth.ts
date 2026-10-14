@@ -280,6 +280,132 @@ export async function handleRevokeDevice(env: Env, userId: string, sessionId: st
 }
 
 /**
+ * 改密碼：客戶端用舊 masterKey 解出 DEK、用新密碼重新包好再送過來。
+ * 伺服器只驗舊 authKey、換掉雜湊與密文，**不撤銷既有 session**——
+ * 其他裝置記憶體裡的 DEK 還有效，能繼續用到下次重新解鎖（spec §9）。
+ */
+export async function handleChangePassword(env: Env, userId: string, body: unknown): Promise<ApiReply> {
+  if (typeof body !== 'object' || body === null) return fail(400, 'bad_body', '請求格式錯誤');
+  const input = body as Record<string, unknown>;
+  const oldAuthKey = requiredString(input, 'oldAuthKey');
+  const newAuthKey = requiredString(input, 'newAuthKey');
+  const newKdf = requiredString(input, 'newKdf');
+  const newWrappedDek = requiredString(input, 'newWrappedDek');
+  const newRecoveryAuthKey = requiredString(input, 'newRecoveryAuthKey');
+  const newRecoveryWrappedDek = requiredString(input, 'newRecoveryWrappedDek');
+  if (!oldAuthKey || !newAuthKey || !newKdf || !newWrappedDek || !newRecoveryAuthKey || !newRecoveryWrappedDek) {
+    return fail(400, 'bad_body', '缺少必要欄位');
+  }
+
+  const user = await env.DB.prepare('SELECT auth_hash, auth_salt FROM users WHERE id = ?')
+    .bind(userId)
+    .first<{ auth_hash: string; auth_salt: string }>();
+  if (!user) return fail(401, 'unauthorized', '請先登入');
+  if ((await pbkdf2Hex(oldAuthKey, user.auth_salt)) !== user.auth_hash) {
+    return fail(401, 'bad_credentials', '目前密碼不正確');
+  }
+
+  const authSalt = randomToken(16);
+  const recoverySalt = randomToken(16);
+  await env.DB.prepare(
+    'UPDATE users SET kdf = ?, auth_hash = ?, auth_salt = ?, wrapped_dek = ?, recovery_hash = ?, recovery_salt = ?, recovery_wrapped_dek = ? WHERE id = ?',
+  )
+    .bind(
+      newKdf,
+      await pbkdf2Hex(newAuthKey, authSalt),
+      authSalt,
+      newWrappedDek,
+      await pbkdf2Hex(newRecoveryAuthKey, recoverySalt),
+      recoverySalt,
+      newRecoveryWrappedDek,
+      userId,
+    )
+    .run();
+
+  return ok();
+}
+
+/**
+ * 救援第一步：用恢復碼的驗證值換一個一次性 resetToken（5 分鐘）。
+ * 伺服器不保存恢復碼本身，所以這裡只比對雜湊；帳號不存在與恢復碼錯誤回同一句話。
+ */
+export async function handleRecoverStart(env: Env, body: unknown, now = Date.now()): Promise<ApiReply> {
+  if (typeof body !== 'object' || body === null) return fail(400, 'bad_body', '請求格式錯誤');
+  const input = body as Record<string, unknown>;
+  const username = normalizeUsername(input.username);
+  const recoveryAuthKey = requiredString(input, 'recoveryAuthKey');
+  if (!username || !recoveryAuthKey) return fail(401, 'bad_recovery', '帳號名或恢復碼錯誤');
+
+  if (!(await allow(env.DB, `recover:${username}`, 5, 3600, now))) {
+    return fail(429, 'rate_limited', '伺服器忙，稍後自動重試');
+  }
+
+  const user = await env.DB.prepare('SELECT id, recovery_hash, recovery_salt FROM users WHERE username = ?')
+    .bind(username)
+    .first<{ id: string; recovery_hash: string; recovery_salt: string }>();
+  if (!user) return fail(401, 'bad_recovery', '帳號名或恢復碼錯誤');
+  if ((await pbkdf2Hex(recoveryAuthKey, user.recovery_salt)) !== user.recovery_hash) {
+    return fail(401, 'bad_recovery', '帳號名或恢復碼錯誤');
+  }
+
+  const resetToken = randomToken();
+  await env.DB.prepare('INSERT INTO resets (token_hash, user_id, expires_at, used) VALUES (?,?,?,0)')
+    .bind(await sha256Hex(resetToken), user.id, now + 5 * 60 * 1000)
+    .run();
+
+  return ok({ resetToken, expiresInSeconds: 300 });
+}
+
+/**
+ * 救援第二步：用 resetToken 換掉密碼與恢復碼，並**撤銷所有 session**
+ * （既然要救援，就當作舊裝置可能已經不可信）。
+ */
+export async function handleRecoverFinish(env: Env, body: unknown, now = Date.now()): Promise<ApiReply> {
+  if (typeof body !== 'object' || body === null) return fail(400, 'bad_body', '請求格式錯誤');
+  const input = body as Record<string, unknown>;
+  const resetToken = requiredString(input, 'resetToken');
+  const newAuthKey = requiredString(input, 'newAuthKey');
+  const newKdf = requiredString(input, 'newKdf');
+  const newWrappedDek = requiredString(input, 'newWrappedDek');
+  const newRecoveryAuthKey = requiredString(input, 'newRecoveryAuthKey');
+  const newRecoveryWrappedDek = requiredString(input, 'newRecoveryWrappedDek');
+  if (!resetToken || !newAuthKey || !newKdf || !newWrappedDek || !newRecoveryAuthKey || !newRecoveryWrappedDek) {
+    return fail(400, 'bad_body', '缺少必要欄位');
+  }
+
+  const tokenHash = await sha256Hex(resetToken);
+  const reset = await env.DB.prepare('SELECT user_id, expires_at, used FROM resets WHERE token_hash = ?')
+    .bind(tokenHash)
+    .first<{ user_id: string; expires_at: number; used: number }>();
+  if (!reset || reset.used === 1 || reset.expires_at < now) {
+    return fail(401, 'bad_reset_token', '救援連結已失效，請重新用恢復碼');
+  }
+
+  // 先標記已用（一次性），再改資料
+  await env.DB.prepare('UPDATE resets SET used = 1 WHERE token_hash = ?').bind(tokenHash).run();
+
+  const authSalt = randomToken(16);
+  const recoverySalt = randomToken(16);
+  await env.DB.prepare(
+    'UPDATE users SET kdf = ?, auth_hash = ?, auth_salt = ?, wrapped_dek = ?, recovery_hash = ?, recovery_salt = ?, recovery_wrapped_dek = ? WHERE id = ?',
+  )
+    .bind(
+      newKdf,
+      await pbkdf2Hex(newAuthKey, authSalt),
+      authSalt,
+      newWrappedDek,
+      await pbkdf2Hex(newRecoveryAuthKey, recoverySalt),
+      recoverySalt,
+      newRecoveryWrappedDek,
+      reset.user_id,
+    )
+    .run();
+
+  await env.DB.prepare('UPDATE sessions SET revoked = 1 WHERE user_id = ?').bind(reset.user_id).run();
+  return ok();
+}
+
+/**
  * 管理端產生邀請碼。明文碼只在回應裡出現一次，資料庫只存 sha256。
  * 呼叫端（router）必須先驗 x-admin-secret。
  */
