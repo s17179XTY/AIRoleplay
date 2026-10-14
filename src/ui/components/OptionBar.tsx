@@ -12,7 +12,7 @@ export default function OptionBar({ items, onPick, disabled }: {
           disabled={disabled}
           onClick={() => onPick(it.key + '. ' + it.text)}
           style={{ borderRadius: 9999 }}
-          className="dsh-card flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] leading-relaxed text-slate-700 transition active:scale-[0.99] disabled:opacity-50"
+          className="dsh-card flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[0.85em] leading-relaxed text-slate-700 transition active:scale-[0.99] disabled:opacity-50"
         >
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#eef5ff] text-[11px] font-semibold text-[#0072e3]">
             {it.key}

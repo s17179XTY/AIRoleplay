@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { loadCardPackage, saveCardPackage } from '../../core/storage/cardRepo';
 import type { CardPackage } from '../../core/cards/package';
 import { draftToPackage, newRegexScript, newWorldbookEntry, packageToDraft, type CardDraft } from './draft';
@@ -22,6 +22,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
   const [draft, setDraft] = useState<CardDraft | null>(null);
   const [section, setSection] = useState<Section>('basic');
   const [loadError, setLoadError] = useState<string | null>(null);
+  const uiFileRef = useRef<HTMLInputElement>(null);
   const closeEditor = useNav((s) => s.closeEditor);
   const showToast = useNav((s) => s.showToast);
   const reloadCard = useSession((s) => s.reloadCard);
@@ -272,10 +273,38 @@ export default function CardEditorScreen({ cardId }: { cardId: string }) {
 
         {section === 'ui' && (
           <>
-            <Field label="交互界面 HTML（沙箱运行，勾选后由模板生成提示词）">
-              <textarea className={inputClass + ' font-mono text-[11px]'} rows={14} value={draft.uiHtml}
-                onChange={(e) => setDraft({ ...draft, uiHtml: e.target.value })} />
-            </Field>
+            {draft.uiHtml.length > 150000 ? (
+              <>
+                <div className="dsh-card p-3.5 text-[12px] leading-relaxed text-slate-500">
+                  这张卡片的内置页面有 {(draft.uiHtml.length / 1024).toFixed(0)} KB，手机上直接编辑会卡死，所以这里只读展示。
+                  需要换页就用下面的「替换页面文件」。
+                </div>
+                <div className="dsh-card max-h-40 overflow-hidden p-3.5 font-mono text-[10px] leading-relaxed text-slate-400">
+                  {draft.uiHtml.slice(0, 600)}……
+                </div>
+                <button type="button" className="dsh-btn w-full py-2.5 text-[13px]"
+                  onClick={() => uiFileRef.current?.click()}>
+                  替换页面文件（选择 .html）
+                </button>
+                <button type="button" className="dsh-chip w-full justify-center py-2.5 text-[12px]"
+                  onClick={() => setDraft({ ...draft, uiHtml: '' })}>
+                  删除内置页面
+                </button>
+                <input ref={uiFileRef} type="file" accept=".html,.htm" className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!file) return;
+                    setDraft({ ...draft, uiHtml: await file.text() });
+                    showToast('已读入新页面，记得点右上角保存');
+                  }} />
+              </>
+            ) : (
+              <Field label="交互界面 HTML（沙箱运行，用户在里面操作后复制文本发给你）">
+                <textarea className={inputClass + ' font-mono text-[11px]'} rows={14} value={draft.uiHtml}
+                  onChange={(e) => setDraft({ ...draft, uiHtml: e.target.value })} />
+              </Field>
+            )}
             <Field label="提示词模板（{{f:字段名}} 取字段值，{{?字段名}}…{{/字段名}} 条件段）">
               <textarea className={inputClass + ' font-mono text-[11px]'} rows={10} value={draft.template}
                 onChange={(e) => setDraft({ ...draft, template: e.target.value })} />

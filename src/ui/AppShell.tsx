@@ -1,8 +1,10 @@
+import { useEffect } from 'react';
 import PlayScreen from './play/PlayScreen';
 import CardListScreen from './cards/CardListScreen';
 import CardEditorScreen from './cards/CardEditorScreen';
 import SettingsScreen from './settings/SettingsScreen';
 import { useNav } from '../state/useNav';
+import { useSetting } from '../state/useSetting';
 
 const TABS: { key: 'cards' | 'play' | 'settings'; label: string; icon: string }[] = [
   { key: 'cards', label: '卡片', icon: '📚' },
@@ -15,6 +17,12 @@ export default function AppShell() {
   const editingCardId = useNav((s) => s.editingCardId);
   const setTab = useNav((s) => s.setTab);
   const toast = useNav((s) => s.toast);
+  const [fontScale] = useSetting('fontScale', '16');
+
+  // 正文字号全局生效：设置页点一下，聊天里的气泡与折叠面板立刻变
+  useEffect(() => {
+    document.documentElement.style.setProperty('--dsh-fs', (Number(fontScale) || 16) + 'px');
+  }, [fontScale]);
 
   const tabActive = (key: 'cards' | 'play' | 'settings') =>
     tab === key && !editingCardId;

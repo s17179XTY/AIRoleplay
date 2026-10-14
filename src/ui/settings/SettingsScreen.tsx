@@ -355,21 +355,31 @@ export default function SettingsScreen() {
         <section>
           <h2 className="mb-2 text-[13px] font-semibold text-slate-600">阅读设置</h2>
           <div className="dsh-card p-3.5">
-            <div className="mb-1 text-[12px] text-slate-500">正文字号</div>
-            <div className="flex gap-2">
-              {[['14', '小'], ['16', '中'], ['18', '大'], ['20', '特大']].map(([v, label]) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setFontScale(v)}
-                  className={
-                    'flex-1 py-2 text-[12px] ' +
-                    (fontScale === v ? 'dsh-btn' : 'dsh-chip')
-                  }
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[12px] text-slate-500">正文字号</span>
+              <span className="text-[11px] text-slate-400">{fontScale}px</span>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              {[['14', '小'], ['16', '中'], ['18', '大'], ['20', '特大']].map(([v, label]) => {
+                const active = fontScale === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setFontScale(v)}
+                    style={{ fontSize: active ? '15px' : '11px' }}
+                    className={
+                      'transition-all duration-150 ' +
+                      (active ? 'dsh-btn px-5 py-2.5 font-semibold' : 'dsh-chip px-3 py-1.5 opacity-70')
+                    }
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 rounded-xl bg-black/[0.03] px-3 py-2 text-slate-600" style={{ fontSize: (Number(fontScale) || 16) + 'px' }}>
+              预览：她抬头看了你一眼，走廊尽头的风吹得窗户轻轻响了一声。
             </div>
           </div>
         </section>

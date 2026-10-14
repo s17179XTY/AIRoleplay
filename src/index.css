@@ -2,6 +2,7 @@
 
 :root {
   --dsh-bg: #f2f2f7;
+  --dsh-fs: 16px; /* 正文字号，由设置页控制 */
   --dsh-blue: #0072e3;
   --dsh-blue-light: #3b9bff;
   --dsh-blue-soft: #eef5ff;
@@ -16,6 +17,11 @@
 }
 
 html, body, #root { height: 100%; }
+
+/* 手机版不显示滚动条：否则出现滚动条时整屏内容会被挤窄 */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+textarea::-webkit-scrollbar { display: none; }
 
 body {
   margin: 0;
@@ -116,8 +122,10 @@ body {
   background: #fff;
   border-radius: 20px;
   box-shadow: var(--dsh-shadow-bubble);
+  font-size: var(--dsh-fs);
 }
 .dsh-bubble-user {
+  font-size: var(--dsh-fs);
   border-radius: 20px;
   background: linear-gradient(180deg, var(--dsh-blue-light), var(--dsh-blue));
   color: #fff;

@@ -34,6 +34,8 @@ export interface SessionState {
   memories: MemoryRecord[];
   openChat: (chatId: string) => Promise<void>;
   newChat: () => Promise<void>;
+  renameChat: (chatId: string, title: string) => Promise<void>;
+  deleteChat: (chatId: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
   removeMemory: (id: string) => Promise<void>;
   chatId: string | null;
@@ -328,6 +330,34 @@ export const useSession = create<SessionState>((set, get) => ({
       await db.chats.update(chatId, { currentLeafId: first.id });
     }
     await get().openChat(chatId);
+  },
+
+  renameChat: async (chatId: string, title: string) => {
+    const clean = title.trim();
+    if (!clean) return;
+    await db.chats.update(chatId, { title: clean, updatedAt: Date.now() });
+  },
+
+  deleteChat: async (chatId: string) => {
+    await db.messages.where('chatId').equals(chatId).delete();
+    await db.memories.where('chatId').equals(chatId).delete();
+    await db.chats.delete(chatId);
+    const { chatId: current, cardId: cid } = get();
+    if (current !== chatId || !cid) return;
+    const rest = (await db.chats.where('cardId').equals(cid).toArray())
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    if (rest.length > 0) {
+      await get().openChat(rest[0].id);
+      return;
+    }
+    const card = await loadCardPackage(cid);
+    const id = newId('chat_');
+    await db.chats.add({
+      id, cardId: cid, title: card?.json.name ?? '对话', vars: {}, promptSnapshot: '',
+      providerId: null, modelPresetId: null, currentLeafId: null,
+      createdAt: Date.now(), updatedAt: Date.now(), archived: 0,
+    });
+    await get().openChat(id);
   },
 
   deleteMessage: async (messageId: string) => {

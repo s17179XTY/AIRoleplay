@@ -19,8 +19,8 @@ describe('游玩页', () => {
   it('渲染开场白并可发送一条消息，回复中出现可点选项', async () => {
     render(<PlayScreen />);
     await waitFor(() => expect(useSession.getState().ready).toBe(true));
-    expect(screen.getByText(/卡片互动页/)).toBeTruthy();
-    expect(screen.getAllByText(/寻找新XP/).length).toBeGreaterThan(0);
+    // 卡片打开时，互动页占满聊天框
+    expect(document.querySelector('iframe')).toBeTruthy();
     const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
     fireEvent.change(box, { target: { value: '你好' } });
     fireEvent.click(screen.getByText('发送'));

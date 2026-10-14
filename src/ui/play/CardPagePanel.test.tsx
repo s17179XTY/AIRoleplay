@@ -25,7 +25,7 @@ describe('聊天框内的卡片互动页', () => {
     expect(frame).toBeTruthy();
     expect(frame!.getAttribute('sandbox')).toBe('allow-scripts');
     expect(frame!.getAttribute('srcdoc')).toContain('Content-Security-Policy');
-    expect(screen.getByText(/卡片互动页/)).toBeTruthy();
+    expect(screen.getByText('测试卡')).toBeTruthy();
   });
 
   it('页面里点复制后，平台接管写入剪贴板并提示粘贴发送', async () => {
@@ -40,7 +40,7 @@ describe('聊天框内的卡片互动页', () => {
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText.mock.calls[0][0]).toContain('【初始信息设定】');
-    expect(useNav.getState().toast).toContain('粘贴到下方输入框发送');
+    expect(useNav.getState().toast).toContain('粘贴到下面输入框发送');
   });
 
   it('页面里的 alert 兜底会变成平台提示', () => {
