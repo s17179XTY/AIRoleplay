@@ -45,6 +45,10 @@ export interface MeResult {
   username: string;
   createdAt: number;
   quota: { used: number; limit: number };
+  /** 被 masterKey 加密過的 DEK（密文，不是秘密） */
+  wrappedDek: string;
+  /** KDF 描述子（迭代數等），登入後用來確認本機參數是否一致 */
+  kdf: string;
 }
 
 export class SyncApiError extends Error {

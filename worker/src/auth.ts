@@ -205,15 +205,25 @@ export async function handleLogout(env: Env, sessionId: string): Promise<ApiRepl
 
 export async function handleMe(env: Env, sessionId: string): Promise<ApiReply> {
   const row = await env.DB.prepare(
-    'SELECT u.username, u.created_at, u.used_bytes, u.quota_bytes FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?',
+    'SELECT u.username, u.created_at, u.used_bytes, u.quota_bytes, u.wrapped_dek, u.kdf FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?',
   )
     .bind(sessionId)
-    .first<{ username: string; created_at: number; used_bytes: number; quota_bytes: number }>();
+    .first<{
+      username: string;
+      created_at: number;
+      used_bytes: number;
+      quota_bytes: number;
+      wrapped_dek: string;
+      kdf: string;
+    }>();
   if (!row) return fail(401, 'unauthorized', '請先登入');
   return ok({
     username: row.username,
     createdAt: row.created_at,
     quota: { used: row.used_bytes, limit: row.quota_bytes },
+    // 客戶端解 DEK 需要這兩個。wrapped_dek 是被 masterKey 加密過的密文、kdf 只是參數，都不是秘密。
+    wrappedDek: row.wrapped_dek,
+    kdf: row.kdf,
   });
 }
 
