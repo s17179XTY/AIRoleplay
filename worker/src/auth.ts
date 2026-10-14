@@ -121,3 +121,119 @@ export async function handleRegister(
   const tokens = await createSession(env, userId, typeof input.label === 'string' ? input.label : '', now);
   return ok({ username, ...tokens });
 }
+
+export async function handleLogin(
+  env: Env,
+  body: unknown,
+  now = Date.now(),
+  clientIp = 'unknown',
+): Promise<ApiReply> {
+  if (!(await allow(env.DB, `login:${clientIp}`, 10, 60, now))) {
+    return fail(429, 'rate_limited', '伺服器忙，稍後自動重試');
+  }
+  if (typeof body !== 'object' || body === null) return fail(400, 'bad_body', '請求格式錯誤');
+  const input = body as Record<string, unknown>;
+  const username = normalizeUsername(input.username);
+  const authKey = requiredString(input, 'authKey');
+  // 帳號不存在與密碼錯誤回同一句話，不洩漏帳號是否存在
+  if (!username || !authKey) return fail(401, 'bad_credentials', '帳號名或密碼錯誤');
+
+  const user = await env.DB.prepare('SELECT id, auth_hash, auth_salt FROM users WHERE username = ?')
+    .bind(username)
+    .first<{ id: string; auth_hash: string; auth_salt: string }>();
+  if (!user) return fail(401, 'bad_credentials', '帳號名或密碼錯誤');
+
+  const candidate = await pbkdf2Hex(authKey, user.auth_salt);
+  if (candidate !== user.auth_hash) return fail(401, 'bad_credentials', '帳號名或密碼錯誤');
+
+  const tokens = await createSession(env, user.id, typeof input.label === 'string' ? input.label : '', now);
+  return ok({ username, ...tokens });
+}
+
+export async function handleRefresh(env: Env, body: unknown, now = Date.now()): Promise<ApiReply> {
+  if (typeof body !== 'object' || body === null) return fail(400, 'bad_body', '請求格式錯誤');
+  const refreshToken = requiredString(body as Record<string, unknown>, 'refreshToken');
+  if (!refreshToken) return fail(401, 'bad_refresh', '登入狀態已過期');
+
+  const hash = await sha256Hex(refreshToken);
+  const session = await env.DB.prepare(
+    'SELECT id, user_id FROM sessions WHERE refresh_hash = ? AND revoked = 0 AND refresh_expires_at > ?',
+  )
+    .bind(hash, now)
+    .first<{ id: string; user_id: string }>();
+  if (!session) return fail(401, 'bad_refresh', '登入狀態已過期');
+
+  const accessToken = randomToken();
+  const nextRefresh = randomToken();
+  await env.DB.prepare(
+    'UPDATE sessions SET access_hash = ?, access_expires_at = ?, refresh_hash = ?, refresh_expires_at = ?, last_seen_at = ? WHERE id = ?',
+  )
+    .bind(
+      await sha256Hex(accessToken),
+      now + ACCESS_TTL_MS,
+      await sha256Hex(nextRefresh),
+      now + REFRESH_TTL_MS,
+      now,
+      session.id,
+    )
+    .run();
+
+  return ok({ accessToken, refreshToken: nextRefresh });
+}
+
+export async function authenticate(
+  env: Env,
+  authorization: string | null,
+  now = Date.now(),
+): Promise<{ userId: string; sessionId: string } | null> {
+  if (!authorization || !authorization.startsWith('Bearer ')) return null;
+  const token = authorization.slice('Bearer '.length).trim();
+  if (!token) return null;
+  const session = await env.DB.prepare(
+    'SELECT id, user_id FROM sessions WHERE access_hash = ? AND revoked = 0 AND access_expires_at > ?',
+  )
+    .bind(await sha256Hex(token), now)
+    .first<{ id: string; user_id: string }>();
+  if (!session) return null;
+  return { userId: session.user_id, sessionId: session.id };
+}
+
+export async function handleLogout(env: Env, sessionId: string): Promise<ApiReply> {
+  await env.DB.prepare('UPDATE sessions SET revoked = 1 WHERE id = ?').bind(sessionId).run();
+  return ok();
+}
+
+export async function handleMe(env: Env, sessionId: string): Promise<ApiReply> {
+  const row = await env.DB.prepare(
+    'SELECT u.username, u.created_at, u.used_bytes, u.quota_bytes FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?',
+  )
+    .bind(sessionId)
+    .first<{ username: string; created_at: number; used_bytes: number; quota_bytes: number }>();
+  if (!row) return fail(401, 'unauthorized', '請先登入');
+  return ok({
+    username: row.username,
+    createdAt: row.created_at,
+    quota: { used: row.used_bytes, limit: row.quota_bytes },
+  });
+}
+
+/**
+ * 配額扣減：用單一 UPDATE 的條件式寫法（used_bytes + delta <= quota_bytes），
+ * 避免「先讀後寫」的競態。超出時回報目前用量讓 UI 顯示。
+ */
+export async function consumeQuota(
+  env: Env,
+  userId: string,
+  deltaBytes: number,
+): Promise<{ allowed: boolean; used: number; limit: number }> {
+  const row = await env.DB.prepare(
+    'UPDATE users SET used_bytes = used_bytes + ? WHERE id = ? AND used_bytes + ? <= quota_bytes RETURNING used_bytes, quota_bytes',
+  )
+    .bind(deltaBytes, userId, deltaBytes)
+    .first<{ used_bytes: number; quota_bytes: number }>();
+  if (row) return { allowed: true, used: row.used_bytes, limit: row.quota_bytes };
+  const current = await env.DB.prepare('SELECT used_bytes, quota_bytes FROM users WHERE id = ?')
+    .bind(userId)
+    .first<{ used_bytes: number; quota_bytes: number }>();
+  return { allowed: false, used: current?.used_bytes ?? 0, limit: current?.quota_bytes ?? 0 };
+}
