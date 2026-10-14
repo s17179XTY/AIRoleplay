@@ -1,4 +1,7 @@
-import { authenticate, handleCreateInvite, handleLogin, handleLogout, handleMe, handleRefresh, handleRegister } from './auth';
+import {
+  authenticate, handleCreateInvite, handleListDevices, handleLogin, handleLogout, handleMe,
+  handleRefresh, handleRegister, handleRevokeDevice,
+} from './auth';
 import { handleGetBlob, handlePutBlob } from './blob';
 import { fail, type ApiReply } from './http';
 import { handlePull, handlePush } from './sync';
@@ -91,7 +94,16 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
     '/api/me': 'GET',
     '/api/sync/pull': 'GET',
     '/api/sync/push': 'POST',
+    '/api/devices': 'GET',
   };
+  const deviceMatch = path.match(/^\/api\/devices\/([^/]+)$/);
+  if (deviceMatch) {
+    if (method !== 'DELETE') return toResponse(fail(405, 'method_not_allowed', '方法不允許'), cors);
+    const auth = await authenticate(env, request.headers.get('authorization'), now);
+    if (!auth) return toResponse(fail(401, 'unauthorized', '請先登入'), cors);
+    return toResponse(await handleRevokeDevice(env, auth.userId, decodeURIComponent(deviceMatch[1])), cors);
+  }
+
   const expectedMethod = protectedRoutes[path];
   if (!expectedMethod) return toResponse(fail(404, 'not_found', '找不到端點'), cors);
   if (method !== expectedMethod) return toResponse(fail(405, 'method_not_allowed', '方法不允許'), cors);
@@ -105,6 +117,10 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
 
   if (path === '/api/me') {
     return toResponse(await handleMe(env, auth.sessionId), cors);
+  }
+
+  if (path === '/api/devices') {
+    return toResponse(await handleListDevices(env, auth.userId, auth.sessionId), cors);
   }
 
   if (path === '/api/sync/pull') {

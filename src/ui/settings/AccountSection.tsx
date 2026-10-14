@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSync, type SyncSeams } from '../../state/useSync';
 import { formatRecoveryCode } from '../../core/sync/kdf';
 import { syncApiBaseUrl } from '../../core/sync/session';
+import DevicesPanel from './DevicesPanel';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
 
@@ -152,10 +153,14 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
 
             {message && <div className="rounded-xl bg-black/5 px-3 py-2 text-[12px] text-slate-600">{message}</div>}
             {conflicts > 0 && (
-              <div className="rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-                {conflicts} 笔冲突已保留本地副本（另一台设备的改动被覆盖前会先留在这里）
+              <div className="flex items-start justify-between gap-2 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
+                <span>{conflicts} 笔冲突已保留本地副本（另一台设备的改动被覆盖前会先留在这里）</span>
+                <button type="button" className="shrink-0 text-amber-800 underline"
+                  onClick={() => void useSync.getState().dismissConflicts()}>知道了</button>
               </div>
             )}
+
+            <DevicesPanel seams={seams} />
 
             <div className="flex gap-2">
               <button type="button" disabled={busy} className="dsh-btn flex-1 py-2.5 text-[13px]"

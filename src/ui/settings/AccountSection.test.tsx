@@ -122,4 +122,33 @@ describe('AccountSection', () => {
     fireEvent.click(screen.getByText('解锁'));
     await waitFor(() => expect(screen.getByText('立即同步')).toBeTruthy());
   });
+
+  it('装置管理：展开后列出装置，可踢掉其他装置', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server });
+    // 同一帳號再登入一次 → 多一台装置
+    await useSync.getState().login({ username: 'alice', password: 'pw-123456', ...seams, fetchImpl: server });
+
+    renderSection();
+    await waitFor(() => expect(screen.getByText('已登录的设备')).toBeTruthy());
+    fireEvent.click(screen.getByText('已登录的设备'));
+
+    await waitFor(() => expect(useSync.getState().devices.length).toBe(2), { timeout: 3000 });
+    await waitFor(() => expect(screen.queryAllByText('踢掉')).toHaveLength(1));
+    fireEvent.click(screen.getByText('踢掉'));
+    // 踢掉之後就沒有可踢的裝置了（getAllByText 在空結果會拋錯，所以用 queryAllByText）
+    await waitFor(() => expect(screen.queryAllByText('踢掉')).toHaveLength(0));
+    expect(useSync.getState().devices).toHaveLength(1);
+  });
+
+  it('冲突提示：有冲突时显示数量，点「知道了」清空', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server });
+    await db.syncConflicts.add({ kind: 'setting', id: 'k', rev: 1, updatedAt: 1, ciphertext: 'x', detectedAt: 1 });
+    useSync.setState({ conflicts: 1 });
+
+    renderSection();
+    await waitFor(() => expect(screen.getByText(/1 笔冲突已保留本地副本/)).toBeTruthy());
+    fireEvent.click(screen.getByText('知道了'));
+    await waitFor(() => expect(screen.queryByText(/笔冲突已保留本地副本/)).toBeNull());
+    expect(await db.syncConflicts.count()).toBe(0);
+  });
 });

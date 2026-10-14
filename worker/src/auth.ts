@@ -249,6 +249,37 @@ export async function consumeQuota(
 }
 
 /**
+ * 已登入裝置列表。只回自己的 session，並標出「就是這台」。
+ * 只吐識別與時間，不吐 token 相關的任何雜湊。
+ */
+export async function handleListDevices(env: Env, userId: string, currentSessionId: string): Promise<ApiReply> {
+  const rows = await env.DB.prepare(
+    'SELECT id, label, created_at, last_seen_at FROM sessions WHERE user_id = ? AND revoked = 0 ORDER BY last_seen_at DESC LIMIT 50',
+  )
+    .bind(userId)
+    .all<{ id: string; label: string; created_at: number; last_seen_at: number }>();
+  return ok({
+    devices: rows.results.map((r) => ({
+      id: r.id,
+      label: r.label || '未命名裝置',
+      createdAt: r.created_at,
+      lastSeenAt: r.last_seen_at,
+      current: r.id === currentSessionId,
+    })),
+  });
+}
+
+/** 踢掉一台裝置。只能踢自己的——別人的 session 一律當成不存在（不回 403，避免探測）。 */
+export async function handleRevokeDevice(env: Env, userId: string, sessionId: string): Promise<ApiReply> {
+  const row = await env.DB.prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ?')
+    .bind(sessionId, userId)
+    .first<{ id: string }>();
+  if (!row) return fail(404, 'device_not_found', '找不到這台裝置');
+  await env.DB.prepare('UPDATE sessions SET revoked = 1 WHERE id = ?').bind(sessionId).run();
+  return ok({ id: sessionId });
+}
+
+/**
  * 管理端產生邀請碼。明文碼只在回應裡出現一次，資料庫只存 sha256。
  * 呼叫端（router）必須先驗 x-admin-secret。
  */

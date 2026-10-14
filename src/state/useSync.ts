@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { createSyncClient, type SyncClient } from '../core/sync/client';
+import { createSyncClient, type DeviceInfo, type SyncClient } from '../core/sync/client';
 import {
   loadKdf, loadTokens, loadUsername, saveKdf, saveTokens, saveUsername, syncApiBaseUrl,
 } from '../core/sync/session';
@@ -23,6 +23,7 @@ export interface SyncUiState {
   quota: { used: number; limit: number } | null;
   lastSyncAt: number | null;
   message: string | null;
+  devices: DeviceInfo[];
 }
 
 /** 測試用的接縫：讓測試注入假伺服器、假 baseUrl 與低成本 KDF */
@@ -40,6 +41,9 @@ export interface SyncActions {
   unlock(password: string, seams?: SyncSeams): Promise<void>;
   logout(): Promise<void>;
   runSync(seams?: SyncSeams): Promise<void>;
+  loadDevices(seams?: SyncSeams): Promise<void>;
+  revokeDevice(id: string, seams?: SyncSeams): Promise<void>;
+  dismissConflicts(): Promise<void>;
 }
 
 const INITIAL: SyncUiState = {
@@ -50,6 +54,7 @@ const INITIAL: SyncUiState = {
   quota: null,
   lastSyncAt: null,
   message: null,
+  devices: [],
 };
 
 /** DEK 只存在記憶體：重新載入頁面後必須重新輸入密碼解鎖（spec §9） */
@@ -238,5 +243,30 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     } catch (err) {
       set({ status: 'error', message: errorMessage(err) });
     }
+  },
+
+  async loadDevices(seams = {}) {
+    if (!get().username) return;
+    try {
+      const client = makeClient(seams);
+      set({ devices: await client.devices() });
+    } catch (err) {
+      set({ message: errorMessage(err) });
+    }
+  },
+
+  async revokeDevice(id, seams = {}) {
+    try {
+      const client = makeClient(seams);
+      await client.revokeDevice(id);
+      set({ devices: (await client.devices()).filter((d) => d.id !== id) });
+    } catch (err) {
+      set({ message: errorMessage(err) });
+    }
+  },
+
+  async dismissConflicts() {
+    await db.syncConflicts.clear();
+    set({ conflicts: 0, message: null });
   },
 }));

@@ -84,6 +84,14 @@ export interface AuthResult extends Tokens {
   username: string;
 }
 
+export interface DeviceInfo {
+  id: string;
+  label: string;
+  createdAt: number;
+  lastSeenAt: number;
+  current: boolean;
+}
+
 export interface SyncClient {
   register(input: RegisterInput): Promise<AuthResult>;
   login(input: { username: string; authKey: string; label?: string }): Promise<AuthResult>;
@@ -94,6 +102,8 @@ export interface SyncClient {
   putBlob(blobId: string, bytes: Uint8Array): Promise<{ size: number }>;
   /** 404 回 null：KV 是最終一致的，剛上傳的檔案可能還讀不到，呼叫端要「稍後重試」而不是當失敗 */
   getBlob(blobId: string): Promise<Uint8Array | null>;
+  devices(): Promise<DeviceInfo[]>;
+  revokeDevice(id: string): Promise<void>;
 }
 
 interface CallOptions {
@@ -237,6 +247,13 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
       if (res.status === 404) return null;
       if (!res.ok) throw new SyncApiError(res.status, 'blob_error', `HTTP ${res.status}`);
       return new Uint8Array(await res.arrayBuffer());
+    },
+    async devices() {
+      const out = await call<{ devices: DeviceInfo[] }>('/api/devices');
+      return out.devices;
+    },
+    async revokeDevice(id) {
+      await call(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
     },
   };
 }
