@@ -5,3 +5,5 @@ dist
 test-results
 playwright-report
 shots/
+.dev.vars
+.wrangler
