@@ -74,6 +74,32 @@ KV 含在 Workers 免费方案内（1 GB/账号、单值 25 MiB、写入 1000 �
 > Windows 提示：若 `npm run worker:*` 报 `Unknown arguments`，那是 npm 的 `.cmd` shim 传参问题
 > （本机 `node` 若是包装脚本就会踩到，脚本本身没错）。改从 PowerShell 直接执行 `wrangler ...` 即可。
 
+#### 怎么发邀请码
+
+邀请码是**一次性**的：注册成功立刻作废；明文只在产生的那一刻出现一次（数据库只存 sha256，之后连站长也拿不回来）。
+
+**线上最快**（后端已部署好时）：
+
+    $secret = ((Get-Content .env.local | Where-Object { $_ -match '^ADMIN_SECRET=' }) -replace '^ADMIN_SECRET=','').Trim()
+    Invoke-RestMethod -Method Post -Uri 'https://<你的 worker>.workers.dev/api/admin/invites' `
+      -Headers @{ 'x-admin-secret' = $secret } -ContentType 'application/json' `
+      -Body '{"note":"friend","ttlDays":30}'      # ttlDays 省略 = 永不过期
+
+> 注：PowerShell 用 `-Body` 传中文备注会变成 `????`（编码问题，不影响码本身）；要中文备注就用下面的脚本。
+
+**本机或线上用脚本**（会印出可直接执行的 SQL，适合不想把 secret 打进命令历史）：
+
+    node worker/scripts/mint-invite.mjs "friend" 30
+    # 再执行它印出的 wrangler d1 execute 指令；本机不要加 --remote
+
+**看还有哪些没用 / 谁用了**：
+
+    wrangler d1 execute dsh-sync --remote --config worker/wrangler.jsonc --command "SELECT substr(code_hash,1,6) AS hash, note, CASE WHEN used_by IS NULL THEN '未使用' ELSE '已使用' END AS status, datetime(created_at/1000,'unixepoch','localtime') AS created FROM invites ORDER BY created_at DESC LIMIT 20;"
+
+> 这台机器上 `wrangler d1 execute` **加 `--json` 会报 `code: 7403 未授权`**，不加就正常。
+
+**收回某人的访问权**：邀请码本身撤不回来（注册时就作废了）。要挡住已注册的人，去设置页「已登录的设备」把那台踢掉（该装置的 token 立刻失效）；要彻底删除，用 SQL 按 `user_id` 删掉 `users` / `sessions` / `records` / `blobs` / `changes` 里对应的行，他的云端数据一并清掉。
+
 ## 账号与同步（核心已就绪）
 
 账号、邀请码、零知识加密与同步引擎在 `src/core/sync/`，后端是独立的 Cloudflare Worker（`worker/`）。
