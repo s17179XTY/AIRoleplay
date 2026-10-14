@@ -151,4 +151,53 @@ describe('AccountSection', () => {
     await waitFor(() => expect(screen.queryByText(/笔冲突已保留本地副本/)).toBeNull());
     expect(await db.syncConflicts.count()).toBe(0);
   });
+
+  it('修改密码：成功后弹出新的恢复码，并能用新密码解锁', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server });
+    renderSection();
+    await waitFor(() => expect(screen.getByText('修改密码')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('修改密码'));
+    fireEvent.change(screen.getByPlaceholderText('当前密码'), { target: { value: 'pw-123456' } });
+    fireEvent.change(screen.getByPlaceholderText('新密码（至少 6 位）'), { target: { value: 'pw-new-456' } });
+    fireEvent.change(screen.getByPlaceholderText('再输一次新密码'), { target: { value: 'pw-new-456' } });
+    fireEvent.click(screen.getByText('确认修改'));
+
+    await waitFor(() => expect(screen.getByText('请抄下恢复码')).toBeTruthy());
+  });
+
+  it('忘记密码：切到恢复码表单，填错恢复码会显示服务器的人话错误', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server });
+    await useSync.getState().logout();
+
+    renderSection();
+    await waitFor(() => expect(screen.getByText(/忘记密码/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/忘记密码/));
+    fireEvent.change(screen.getByPlaceholderText(/账号名/), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByPlaceholderText(/恢复码/), { target: { value: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } });
+    fireEvent.change(screen.getByPlaceholderText('新密码（至少 6 位）'), { target: { value: 'pw-rescued-1' } });
+    fireEvent.click(screen.getByText('用恢复码救回'));
+
+    await waitFor(() => expect(screen.getByText(/帳號名或恢復碼錯誤/)).toBeTruthy());
+  });
+
+  it('忘记密码：能真的用恢复码救回并显示新恢复码', async () => {
+    const first = await useSync.getState().register({
+      username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server,
+    });
+    await db.settings.put({ key: 'precious', value: '1' });
+    await useSync.getState().runSync(seams);
+    await useSync.getState().logout();
+
+    renderSection();
+    await waitFor(() => expect(screen.getByText(/忘记密码/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/忘记密码/));
+    fireEvent.change(screen.getByPlaceholderText(/账号名/), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByPlaceholderText(/恢复码/), { target: { value: first.recoveryCode } });
+    fireEvent.change(screen.getByPlaceholderText('新密码（至少 6 位）'), { target: { value: 'pw-rescued-1' } });
+    fireEvent.click(screen.getByText('用恢复码救回'));
+
+    await waitFor(() => expect(screen.getByText('请抄下恢复码')).toBeTruthy(), { timeout: 15000 });
+    expect((await db.settings.get('precious'))?.value).toBe('1');
+  });
 });

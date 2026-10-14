@@ -43,6 +43,13 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [recoverySaved, setRecoverySaved] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [currentPw, setCurrentPw] = useState('');
+  const [nextPw, setNextPw] = useState('');
+  const [nextPw2, setNextPw2] = useState('');
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotCode, setForgotCode] = useState('');
+  const [forgotPw, setForgotPw] = useState('');
 
   const backendMissing = !syncApiBaseUrl() && !seams.baseUrl;
 
@@ -91,6 +98,43 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
     await run(async () => {
       await useSync.getState().unlock(password, seams);
       setPassword('');
+    });
+  };
+
+  const onChangePassword = async () => {
+    if (nextPw.length < 6) {
+      setLocalError('新密码至少 6 个字符');
+      return;
+    }
+    if (nextPw !== nextPw2) {
+      setLocalError('两次输入的新密码不一样');
+      return;
+    }
+    await run(async () => {
+      const out = await useSync.getState().changePassword(currentPw, nextPw, seams);
+      setCurrentPw('');
+      setNextPw('');
+      setNextPw2('');
+      setPasswordOpen(false);
+      setRecoverySaved(false);
+      setRecoveryCode(out.recoveryCode);
+    });
+  };
+
+  const onRecover = async () => {
+    if (forgotPw.length < 6) {
+      setLocalError('新密码至少 6 个字符');
+      return;
+    }
+    await run(async () => {
+      const out = await useSync.getState().recoverAccount({
+        username: name, recoveryCode: forgotCode, newPassword: forgotPw, ...seams,
+      });
+      setForgotCode('');
+      setForgotPw('');
+      setForgotMode(false);
+      setRecoverySaved(false);
+      setRecoveryCode(out.recoveryCode);
     });
   };
 
@@ -172,6 +216,29 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
                 退出登录
               </button>
             </div>
+
+            <button type="button" className="w-full rounded-xl border border-black/10 py-2 text-[12px] text-slate-500"
+              onClick={() => { setPasswordOpen((v) => !v); setLocalError(null); }}>
+              {passwordOpen ? '收起' : '修改密码'}
+            </button>
+            {passwordOpen && (
+              <div className="space-y-2">
+                <input className={inputClass} type="password" placeholder="当前密码" value={currentPw}
+                  onChange={(e) => setCurrentPw(e.target.value)} />
+                <input className={inputClass} type="password" placeholder="新密码（至少 6 位）" value={nextPw}
+                  onChange={(e) => setNextPw(e.target.value)} />
+                <input className={inputClass} type="password" placeholder="再输一次新密码" value={nextPw2}
+                  onChange={(e) => setNextPw2(e.target.value)} />
+                {localError && <div className="text-[12px] text-red-500">{localError}</div>}
+                <button type="button" disabled={busy} className="dsh-btn w-full py-2.5 text-[13px]"
+                  onClick={() => void onChangePassword()}>
+                  {busy ? '处理中…' : '确认修改'}
+                </button>
+                <div className="text-[11px] text-slate-400">
+                  修改后会给出一组新的恢复码，旧的立刻失效；其他设备下次重新解锁时要用新密码。
+                </div>
+              </div>
+            )}
             <div className="text-[11px] text-slate-400">
               API Key 只存在本机，永远不会上传；退出登录后本机数据保留。
             </div>
@@ -217,39 +284,69 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
             登录后可在多台设备之间同步（云端只有密文）。不登录也一样能玩，数据留在本机。
           </div>
 
-          {backendMissing && (
+          {(localError || message) && <div className="text-[12px] text-red-500">{localError ?? message}</div>}
+
+          {backendMissing && !forgotMode && (
             <div className="rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
               这个版本没有配置同步后端（VITE_SYNC_API），账号功能不可用。
             </div>
           )}
 
-          <div className="flex gap-2">
-            <button type="button" className={mode === 'register' ? 'dsh-chip dsh-chip-active flex-1 py-2' : 'dsh-chip flex-1 py-2'}
-              onClick={() => setMode('register')}>注册（需邀请码）</button>
-            <button type="button" className={mode === 'login' ? 'dsh-chip dsh-chip-active flex-1 py-2' : 'dsh-chip flex-1 py-2'}
-              onClick={() => setMode('login')}>登录</button>
-          </div>
-
-          <input className={inputClass} placeholder="账号名（小写字母、数字、- 和 _）" value={name}
-            onChange={(e) => setName(e.target.value)} />
-          <input className={inputClass} type="password" placeholder="密码" value={password}
-            onChange={(e) => setPassword(e.target.value)} />
-
-          {mode === 'register' && (
+          {forgotMode ? (
             <>
-              <input className={inputClass} type="password" placeholder="再输一次密码" value={confirm}
-                onChange={(e) => setConfirm(e.target.value)} />
-              <input className={inputClass} placeholder="邀请码" value={inviteCode}
-                onChange={(e) => setInviteCode(e.target.value)} />
+              <div className="rounded-xl bg-black/5 px-3 py-2 text-[12px] text-slate-600">
+                输入账号名与恢复码，并用新密码重新包一份解密密钥。没有恢复码就无法救回云端数据（本机数据不受影响）。
+              </div>
+              <input className={inputClass} placeholder="账号名（小写字母、数字、- 和 _）" value={name}
+                onChange={(e) => setName(e.target.value)} />
+              <input className={inputClass} placeholder="恢复码（可含 - 与空格）" value={forgotCode}
+                onChange={(e) => setForgotCode(e.target.value)} />
+              <input className={inputClass} type="password" placeholder="新密码（至少 6 位）" value={forgotPw}
+                onChange={(e) => setForgotPw(e.target.value)} />
+              <div className="flex gap-2">
+                <button type="button" disabled={busy || backendMissing} className="dsh-btn flex-1 py-2.5 text-[13px]"
+                  onClick={() => void onRecover()}>
+                  {busy ? '处理中…' : '用恢复码救回'}
+                </button>
+                <button type="button" className="rounded-xl border border-black/10 px-4 py-2 text-[13px] text-slate-500"
+                  onClick={() => { setForgotMode(false); setLocalError(null); }}>
+                  返回登录
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <button type="button" className={mode === 'register' ? 'dsh-chip dsh-chip-active flex-1 py-2' : 'dsh-chip flex-1 py-2'}
+                  onClick={() => setMode('register')}>注册（需邀请码）</button>
+                <button type="button" className={mode === 'login' ? 'dsh-chip dsh-chip-active flex-1 py-2' : 'dsh-chip flex-1 py-2'}
+                  onClick={() => setMode('login')}>登录</button>
+              </div>
+
+              <input className={inputClass} placeholder="账号名（小写字母、数字、- 和 _）" value={name}
+                onChange={(e) => setName(e.target.value)} />
+              <input className={inputClass} type="password" placeholder="密码" value={password}
+                onChange={(e) => setPassword(e.target.value)} />
+
+              {mode === 'register' && (
+                <>
+                  <input className={inputClass} type="password" placeholder="再输一次密码" value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)} />
+                  <input className={inputClass} placeholder="邀请码" value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)} />
+                </>
+              )}
+
+              <button type="button" disabled={busy || backendMissing} className="dsh-btn w-full py-2.5 text-[13px]"
+                onClick={() => void (mode === 'register' ? onRegister() : onLogin())}>
+                {busy ? '处理中…' : mode === 'register' ? '注册并开始同步' : '登录并同步'}
+              </button>
+              <button type="button" className="w-full text-[12px] text-slate-400 underline"
+                onClick={() => { setForgotMode(true); setLocalError(null); }}>
+                忘记密码？用恢复码救回
+              </button>
             </>
           )}
-
-          {(localError || message) && <div className="text-[12px] text-red-500">{localError ?? message}</div>}
-
-          <button type="button" disabled={busy || backendMissing} className="dsh-btn w-full py-2.5 text-[13px]"
-            onClick={() => void (mode === 'register' ? onRegister() : onLogin())}>
-            {busy ? '处理中…' : mode === 'register' ? '注册并开始同步' : '登录并同步'}
-          </button>
         </div>
       </section>
       {recoveryDialog}
