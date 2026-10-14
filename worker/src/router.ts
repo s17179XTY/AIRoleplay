@@ -1,4 +1,5 @@
 import { authenticate, handleCreateInvite, handleLogin, handleLogout, handleMe, handleRefresh, handleRegister } from './auth';
+import { handleGetBlob, handlePutBlob } from './blob';
 import { fail, type ApiReply } from './http';
 import { handlePull, handlePush } from './sync';
 import type { Env } from './types';
@@ -57,6 +58,30 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
   if (path === '/api/auth/refresh') {
     if (method !== 'POST') return toResponse(fail(405, 'method_not_allowed', '方法不允許'), cors);
     return toResponse(await handleRefresh(env, await readJson(request), now), cors);
+  }
+
+  // blob 走二進位通道（不是 JSON）。順序與其他受保護路徑一致：先確認路徑形狀，再驗身分。
+  const blobMatch = path.match(/^\/api\/blob\/([^/]+)$/);
+  if (blobMatch) {
+    if (method !== 'PUT' && method !== 'GET') return toResponse(fail(405, 'method_not_allowed', '方法不允許'), cors);
+    const auth = await authenticate(env, request.headers.get('authorization'), now);
+    if (!auth) return toResponse(fail(401, 'unauthorized', '請先登入'), cors);
+    const blobId = decodeURIComponent(blobMatch[1]);
+    if (method === 'PUT') {
+      const bytes = await request.arrayBuffer();
+      return toResponse(await handlePutBlob(env, auth.userId, blobId, bytes, now), cors);
+    }
+    const reply = await handleGetBlob(env, auth.userId, blobId);
+    if (!reply.bytes) return toResponse(reply, cors);
+    return new Response(reply.bytes, {
+      status: 200,
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-length': String(reply.bytes.byteLength),
+        'cache-control': 'private, no-store',
+        ...cors,
+      },
+    });
   }
 
   // 以下都需要有效的 access token。順序很重要：先確認路徑存在（不存在就 404），再驗身分，

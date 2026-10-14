@@ -13,8 +13,8 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
-    { "binding": "BLOBS", "bucket_name": "dsh-sync-blobs" }
+  "kv_namespaces": [
+    { "binding": "BLOBS", "id": "7f04c9265f034310a2991e472cbf751b" }
   ],
   "observability": { "enabled": true }
 }
