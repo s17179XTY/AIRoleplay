@@ -7,8 +7,18 @@ export default defineConfig({
   server: {
     host: true, // 允许手机通过局域网 IP 访问，便于真机调试
     watch: {
-      // 忽略编辑器原子写入的临时目录，避免文件监视器 EBUSY 崩溃
-      ignored: ['**/.*.tmpdir/**', '**/*.tmp', '**/shots/**'],
+      // 忽略编辑器原子写入的临时目录、密钥文件、构建产物，避免文件监视器 EBUSY 崩溃
+      ignored: [
+        '**/.*.tmpdir/**',
+        '**/*.tmp',
+        '**/shots/**',
+        '**/.env',
+        '**/.env.*',
+        '**/.dev.vars',
+        '**/.wrangler/**',
+        '**/dist/**',
+        '**/*.log',
+      ],
     },
   },
   test: {
