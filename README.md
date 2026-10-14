@@ -9,14 +9,14 @@
 
     npm install
     npm run dev        # 打开手机视口访问 http://localhost:5173
-    npm run test       # 42 个测试文件 / 201 个用例
+    npm run test       # 49 个测试文件 / 273 个用例
     npm run build      # 类型检查 + 生产构建（产物在 dist/）
 
 首次打开会自动种下一张演示卡，直接就能玩（默认用 mock 模拟模型，不花钱）。
 
 ## 部署到 Cloudflare Pages
 
-**线上地址：https://air-roleplay.pages.dev**（Cloudflare 帐号 `<cloudflare-account>'s Account`，Pages 项目 `air-roleplay`，Direct Upload 方式）
+**线上地址：https://air-roleplay.pages.dev**（Cloudflare 帐号与资源 id 见本机 `wrangler whoami` 与 `worker/wrangler.jsonc`；Pages 项目 `air-roleplay`，Direct Upload 方式）
 
 纯静态站点，没有 Functions、没有服务端依赖，构建产物就是 `dist/`。仓库里已经放好 Pages 需要的三个文件：
 
@@ -29,7 +29,7 @@
 ### 方式一：Dashboard 连接 Git（推荐；push 一次自动发布）
 
 1. Cloudflare Dashboard → **Workers & Pages** → Create application → **Pages** → **Import an existing Git repository**
-2. 授权 GitHub，选中仓库 `s17179XTY/AIRoleplay`；**Production branch** 填 `main`
+2. 授权 GitHub，选中仓库 `<你的 GitHub 账号>/AIRoleplay`；**Production branch** 填 `main`
 3. **Build command**：`npm run build`；**Build output directory**：`dist`（框架预设选 “React (Vite)” 就是这两个值）
 4. 环境变量（可选，`.nvmrc` 已足够）：`NODE_VERSION` = `22`
 5. Save and Deploy → 线上地址形如 `https://<项目名>.pages.dev`。之后每次 push 到 `main` 自动重新发布，其他分支自动出预览链接
@@ -57,14 +57,19 @@
 
     wrangler login                                   # 浏览器里点一次 Allow
     wrangler d1 create dsh-sync                      # 建库，把印出的 database_id 填进 worker/wrangler.jsonc
-    wrangler r2 bucket create dsh-sync-blobs         # 需先在 Dashboard 启用 R2，否则报 code 10042
+    wrangler kv namespace create dsh-blobs           # 建 blob 存储，把印出的 id 填进 worker/wrangler.jsonc
     npm run d1:migrate:remote                        # 建表
     wrangler secret put ADMIN_SECRET                 # 邀请码管理端的口令
-    npm run worker:deploy
+    npm run worker:deploy                            # 印出的 workers.dev 网址就是 VITE_SYNC_API
     node worker/scripts/mint-invite.mjs "给 alice"    # 产生一次性邀请码
 
-本机开发**不需要部署**：`npm run d1:migrate:local` + `npm run worker:dev` 就能跑，R2 由 Miniflare 模拟。
-别忘了把 Pages 域名写进 `worker/wrangler.jsonc` 的 `vars.ALLOWED_ORIGINS`（CORS 白名单）。
+前端要指向这个网址：在本机建 `.env.local`（已被 gitignore）写 `VITE_SYNC_API=https://<你的 worker>.workers.dev`，再 `npm run build` 并部署 Pages。
+
+**blob 存储用 Workers KV 而不是 R2**：R2 免费额度虽有 10 GB，但启用必须绑付款方式（`code 10042`）；
+KV 含在 Workers 免费方案内（1 GB/账号、单值 25 MiB、写入 1000 次/日）。
+
+本机开发**不需要部署**：`npm run d1:migrate:local` + `npm run worker:dev` 就能跑，KV 由 Miniflare 模拟。
+别忘了把 Pages 域名写进 `worker/wrangler.jsonc` 的 `vars.ALLOWED_ORIGINS`（CORS 白名单，本机开发来源已一并列入）。
 
 > Windows 提示：若 `npm run worker:*` 报 `Unknown arguments`，那是 npm 的 `.cmd` shim 传参问题
 > （本机 `node` 若是包装脚本就会踩到，脚本本身没错）。改从 PowerShell 直接执行 `wrangler ...` 即可。
@@ -84,10 +89,14 @@
 `providers.apiKey` 与 `extraHeaders` 永远不会上传（有测试守着）。
 没登录时行为与纯本地版完全一致——同步是可选的加值，不是前提。
 
-**目前进度**：M1（加密层、账号分库、outbox）+ M2（Worker、认证、D1 端点、真 workerd 冒烟）+
-M3（HTTP 客户端、同步引擎、两装置整合）已完成。
-**还没做**：R2 的 blob 实际传输（素材图与 >256 KiB 的卡片互动页）、设置页的账号 UI、
-恢复码救援流程、改密码、以及 `AGENTS.md` 硬约束的修订。
+**目前进度**：M1（加密层、账号分库、outbox）+ M2（Worker、认证、D1 端点）+ M3（HTTP 客户端、同步引擎、两装置整合）+
+M4（blob/KV 传输、素材与 >256 KiB 的卡片互动页）+ M5（设置页账号 UI：注册/登录/解锁/同步状态/冲突/配额/装置管理）+
+M6（改密码、恢复码救援）+ M7（线上部署与验证）**全部完成**。
+
+- 后端已部署：Cloudflare Worker `dsh-sync-api`（D1 `dsh-sync` + KV `dsh-blobs`），26 项冒烟对**正式环境**全过。
+- 前端已部署：`https://air-roleplay.pages.dev`，注册 → 恢复码 → 同步已在真实浏览器实测通过。
+- 端到端测试：`src/core/sync/integration.test.ts`（两装置一致、秘密不外流、离线补推）、
+  `src/core/sync/recovery.test.ts`（改密码、忘密码用恢复码救回）。
 
 ## 已实现
 

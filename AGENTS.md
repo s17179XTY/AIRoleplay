@@ -63,9 +63,12 @@
 
     npm run d1:migrate:local                      # 建本机 D1（在 .wrangler/state，已 gitignore）
     npm run worker:dev                            # 本机起 Worker（http://127.0.0.1:8787）
-    node worker/smoke.mjs                         # 对 wrangler dev 打一轮端到端冒烟（11 项）
+    node worker/smoke.mjs                         # 对 wrangler dev 打一轮端到端冒烟（26 项）
     node worker/scripts/mint-invite.mjs "给 alice" # 产生一次性邀请码
-    npm run worker:deploy / d1:migrate:remote      # 上线用（需先开 R2，见第 6 节）
+    npm run worker:deploy / d1:migrate:remote      # 上线用（blob 存储用 KV，不需要付费开 R2）
+
+    前端指向后端：.env.local 写 VITE_SYNC_API=http://127.0.0.1:8787（本机）或线上 Worker 网址（部署用）。
+    smoke.mjs 可对正式环境跑：SMOKE_BASE=https://<worker>.workers.dev ADMIN_SECRET=<secret> node worker/smoke.mjs
 
 > **Windows 注意**：本机环境的 `node` 若是包装脚本（例如 DSH 的 `node.cmd`），`npm run worker:*`
 > 会报 `Unknown arguments`——那是 npm 的 `.cmd` shim 传参问题，不是脚本写错。改从 PowerShell 直接
@@ -108,9 +111,17 @@
 | `npm run worker:*` 报 `Unknown arguments` | 本机 `node` 是包装脚本，npm 的 `.cmd` shim 传参被窜改 | 从 PowerShell 直接调 `wrangler ...`；验证脚本可用 `node.exe` |
 | `wrangler` 起不来：`compatibility date ... newest supported is ...` | 本机 workerd 只支援到前一天 | `compatibility_date` 用 `2026-10-13` |
 | `wrangler` 报 `Unknown arguments` 且指向 config | `migrations_dir` 放错层级 | 它属于 **binding 内部**（`d1_databases[].migrations_dir`），不是顶层 |
-| `wrangler r2 bucket create` 回 `code: 10042` | 账号没启用 R2 | 到 Cloudflare Dashboard 手动开启（可能需绑付款方式）；本机开发用 Miniflare 模拟，不受影响 |
+| `wrangler r2 bucket create` 回 `code: 10042` | 账号没启用 R2（启用必须绑付款方式） | **已改用 Workers KV**：含在免费方案内（1 GB/账号、单值 25 MiB、写入 1000 次/日），不需要付款方式 |
 | `import.meta.url` 在测试里喷 `The URL must be of scheme file` | vitest 的 jsdom 环境模块 URL 不是 `file:` | 用 `process.cwd()` 定位（见 `worker/test/helpers/migration.ts`） |
 | 测试随机失败，断言是「密文不含 `sk-` / `18`」 | base64url 密文本来就可能凑出短字符串 | 短字符串一律不比对；要验「真的加密了」就写**解密往返断言** |
+| blob 上传后另一端立刻取不到 | KV 是**最终一致**的（写入后全球生效最多 60 秒） | `GET /api/blob/:id` 一律回 404 让客户端稍后重试；引擎把这种情况当 `pending`，**不得**标记失败或删掉本地参照 |
+| blob 的 key 用了内容哈希做全局去重 | 两个账号有同一个文件时，「有同一个文件」这件事会从 key 泄漏 | key 一律 `<userId>/<blobId>`，不做跨账号去重 |
+| 重试后先前推上云的信封永远解不开 | 每次重新加密都会换随机的 `fileKey` | `fileKey` 存在 `blobState.fileKey` 并**重用**；`state === 'uploaded'` 就跳过重复上传 |
+| 走了 blob 但服务器仍报「单笔超过 256 KiB」 | `sanitizeForSync` 会回传整列，明文（如 1.25 MB 的卡片页）跟着进信封 | 决定走 blob 后必须 `delete data.text / data.bytes`（`engine.pushPending`） |
+| 前端调用新端点时服务器回「缺少必要欄位」 | store 里字段名写错（`recoveryAuthKey` vs `newRecoveryAuthKey`），测试跑得过但接口对不上 | **`npm run build` 的类型检查会抓到**——这就是「build 必须无错」不可跳过的原因 |
+| 冒烟脚本后半段全部 401 | 脚本前面已经 logout 撤销了 session，后面却继续用同一个 token | 冒烟脚本自己要在 logout 之后重新登入（`session` 变量），别复用死掉的 token |
+| 注册成功但用户说「没看到恢复码」 | 恢复码对话框原本写在「未登录」分支里，注册成功后组件立刻切到已登录分支 → 对话框消失 | 对话框必须挂在组件最外层（三个分支都带），否则等于永久失去救援能力；有测试守着 |
+| 本机 vite dev 打本机 Worker 被 CORS 挡 | `vars.ALLOWED_ORIGINS` 只列了 Pages 域名 | 把 `http://127.0.0.1:5173`、`http://localhost:5173` 一并列进去（已写进 `worker/wrangler.jsonc`） |
 
 ## 7. 数据模型要点
 
@@ -124,7 +135,7 @@
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**42 个测试文件 / 201 个用例全绿**，构建通过。
+改之前先跑一遍确认基线：**49 个测试文件 / 273 个用例全绿**，构建通过。
 关键回归测试：装配顺序、世界书触发、记忆归档与回注、正则替换、白名单清洗（含 XSS 用例）、卡片 zip 往返、酒馆卡互转、卡片自愈、草稿态不落库、布局约束。
 同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、两装置端到端一致（`src/core/sync/integration.test.ts`）。
 后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs` 对 `wrangler dev` 冒烟。
