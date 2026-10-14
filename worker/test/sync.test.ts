@@ -121,4 +121,52 @@ describe('sync push/pull', () => {
     const row = await env.DB.prepare('SELECT blob_ref FROM records WHERE id = ?').bind('a1').first<{ blob_ref: string }>();
     expect(row?.blob_ref).toBe('blob_x');
   });
+
+  it('刪掉帶 blobRef 的記錄時，blob 引用數歸零、KV 與配額一併回收', async () => {
+    await handlePush(env, USER, { records: [rec({ kind: 'assetMeta', id: 'a1', blobRef: 'blob_x', size: 5 })] });
+    await env.DB.prepare("INSERT INTO blobs (blob_id, user_id, size, created_at, ref_count) VALUES ('blob_x', ?, 1024, 1, 1)")
+      .bind(USER)
+      .run();
+    await env.DB.prepare('UPDATE users SET used_bytes = 1024 WHERE id = ?').bind(USER).run();
+    await env.BLOBS.put(`${USER}/blob_x`, new Uint8Array([1, 2, 3]));
+
+    await handlePush(env, USER, {
+      records: [{ kind: 'assetMeta', id: 'a1', rev: 0, baseRev: 0, updatedAt: 2000, deleted: true }],
+    });
+
+    expect(await env.DB.prepare("SELECT blob_id FROM blobs WHERE blob_id = 'blob_x'").first()).toBeNull();
+    const user = await env.DB.prepare('SELECT used_bytes FROM users WHERE id = ?').bind(USER).first<{ used_bytes: number }>();
+    expect(user?.used_bytes).toBe(0);
+    expect(await env.BLOBS.get(`${USER}/blob_x`, 'arrayBuffer')).toBeNull();
+  });
+
+  it('改寫同一筆但 blobRef 換了：舊的回收、新的保留', async () => {
+    await handlePush(env, USER, { records: [rec({ kind: 'assetMeta', id: 'a1', blobRef: 'blob_old', size: 5 })] });
+    for (const id of ['blob_old', 'blob_new']) {
+      await env.DB.prepare('INSERT INTO blobs (blob_id, user_id, size, created_at, ref_count) VALUES (?,?,?,?,1)')
+        .bind(id, USER, 100, 1)
+        .run();
+      await env.BLOBS.put(`${USER}/${id}`, new Uint8Array([7]));
+    }
+
+    await handlePush(env, USER, {
+      records: [rec({ kind: 'assetMeta', id: 'a1', baseRev: 1, rev: 2, blobRef: 'blob_new', size: 7 })],
+    });
+
+    expect(await env.DB.prepare("SELECT blob_id FROM blobs WHERE blob_id = 'blob_old'").first()).toBeNull();
+    const kept = await env.DB.prepare("SELECT ref_count FROM blobs WHERE blob_id = 'blob_new'").first<{ ref_count: number }>();
+    expect(kept?.ref_count).toBe(1);
+  });
+
+  it('blobRef 沒變時不會誤刪 blob', async () => {
+    await handlePush(env, USER, { records: [rec({ kind: 'assetMeta', id: 'a1', blobRef: 'blob_x', size: 5 })] });
+    await env.DB.prepare("INSERT INTO blobs (blob_id, user_id, size, created_at, ref_count) VALUES ('blob_x', ?, 100, 1, 1)")
+      .bind(USER)
+      .run();
+
+    await handlePush(env, USER, { records: [rec({ kind: 'assetMeta', id: 'a1', baseRev: 1, rev: 2, blobRef: 'blob_x', size: 5 })] });
+
+    const kept = await env.DB.prepare("SELECT ref_count FROM blobs WHERE blob_id = 'blob_x'").first<{ ref_count: number }>();
+    expect(kept?.ref_count).toBe(1);
+  });
 });

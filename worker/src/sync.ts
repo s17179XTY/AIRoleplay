@@ -1,5 +1,6 @@
 import { fail, ok, type ApiReply } from './http';
 import { consumeQuota } from './auth';
+import { releaseBlobsForRecord } from './blob';
 import type { Env } from './types';
 
 export const MAX_PULL_LIMIT = 200;
@@ -113,9 +114,14 @@ export async function handlePush(
 
     // 墓碑優先：刪除不做 rev 比較，永遠生效
     if (record.deleted) {
+      const before = await env.DB.prepare('SELECT blob_ref FROM records WHERE user_id = ? AND kind = ? AND id = ?')
+        .bind(userId, record.kind, record.id)
+        .first<{ blob_ref: string | null }>();
       await env.DB.prepare('DELETE FROM records WHERE user_id = ? AND kind = ? AND id = ?')
         .bind(userId, record.kind, record.id)
         .run();
+      // 記錄沒了，它引用的 blob 也該被釋放（引用數歸零就刪 KV、退配額）
+      await releaseBlobsForRecord(env, userId, before?.blob_ref ?? null, 0);
       await env.DB.prepare('INSERT INTO changes (user_id, kind, id, deleted, at) VALUES (?,?,?,1,?)')
         .bind(userId, record.kind, record.id, now)
         .run();
@@ -128,9 +134,15 @@ export async function handlePush(
       return fail(400, 'bad_record', '記錄缺少 ciphertext');
     }
 
-    const existing = await env.DB.prepare('SELECT rev, size, ciphertext FROM records WHERE user_id = ? AND kind = ? AND id = ?')
+    const existing = await env.DB.prepare('SELECT rev, size, ciphertext, blob_ref FROM records WHERE user_id = ? AND kind = ? AND id = ?')
       .bind(userId, record.kind, record.id)
-      .first<{ rev: number; size: number; ciphertext: string }>();
+      .first<{ rev: number; size: number; ciphertext: string; blob_ref: string | null }>();
+
+    // blobRef 換了就把舊 blob 的引用數減一（舊檔案沒人引用時會被回收、配額退回）
+    const nextBlob = record.blobRef ?? null;
+    if (existing?.blob_ref && existing.blob_ref !== nextBlob) {
+      await releaseBlobsForRecord(env, userId, existing.blob_ref, 0);
+    }
 
     const serverRev = existing?.rev ?? 0;
     const clientBase = record.baseRev ?? 0;
