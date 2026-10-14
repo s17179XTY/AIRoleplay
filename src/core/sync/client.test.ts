@@ -104,4 +104,63 @@ describe('sync client', () => {
     await expect(client.logout()).rejects.toBeInstanceOf(TypeError);
     expect(seen).toEqual([null]);
   });
+
+  it('putBlob 走二進位通道、帶 Authorization，不吃 JSON', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ok: true, blobId: 'b1', size: 4 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = createSyncClient({
+      baseUrl: 'https://api.test',
+      fetchImpl,
+      getTokens: () => ({ accessToken: 'A1', refreshToken: 'R1' }),
+    });
+
+    const out = await client.putBlob('b1', new Uint8Array([1, 2, 3, 4]));
+
+    expect(out.size).toBe(4);
+    expect(calls[0].url).toBe('https://api.test/api/blob/b1');
+    expect(calls[0].init.method).toBe('PUT');
+    expect((calls[0].init.headers as Record<string, string>)['content-type']).toBe('application/octet-stream');
+    expect((calls[0].init.headers as Record<string, string>).authorization).toBe('Bearer A1');
+    expect(calls[0].init.body).toBeInstanceOf(ArrayBuffer);
+  });
+
+  it('getBlob 拿回位元組；404 回 null（最終一致性要重試，不是錯誤）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array([9, 8, 7]), { status: 200 })) as unknown as typeof fetch;
+    const client = createSyncClient({
+      baseUrl: 'https://api.test',
+      fetchImpl,
+      getTokens: () => ({ accessToken: 'A1', refreshToken: 'R1' }),
+    });
+    expect(Array.from((await client.getBlob('b1'))!)).toEqual([9, 8, 7]);
+
+    const notFound = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: false, code: 'blob_missing' }), { status: 404 }),
+    ) as unknown as typeof fetch;
+    const client2 = createSyncClient({
+      baseUrl: 'https://api.test',
+      fetchImpl: notFound,
+      getTokens: () => ({ accessToken: 'A1', refreshToken: 'R1' }),
+    });
+    expect(await client2.getBlob('b1')).toBeNull();
+  });
+
+  it('blob 請求遇到 401 也會自動 refresh 再重試一次', async () => {
+    let attempt = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/auth/refresh')) return jsonResponse(200, { ok: true, accessToken: 'A2', refreshToken: 'R2' });
+      attempt += 1;
+      if (attempt === 1) return new Response(JSON.stringify({ ok: false, code: 'unauthorized' }), { status: 401 });
+      return new Response(JSON.stringify({ ok: true, blobId: 'b1', size: 2 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = createSyncClient({
+      baseUrl: 'https://api.test',
+      fetchImpl,
+      getTokens: () => ({ accessToken: 'A1', refreshToken: 'R1' }),
+    });
+    expect((await client.putBlob('b1', new Uint8Array([1, 2]))).size).toBe(2);
+    expect(attempt).toBe(2);
+  });
 });

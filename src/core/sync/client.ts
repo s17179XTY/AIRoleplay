@@ -87,6 +87,9 @@ export interface SyncClient {
   me(): Promise<MeResult>;
   pull(cursor: number, limit?: number): Promise<PullResult>;
   push(payload: PushPayload): Promise<PushResult>;
+  putBlob(blobId: string, bytes: Uint8Array): Promise<{ size: number }>;
+  /** 404 回 null：KV 是最終一致的，剛上傳的檔案可能還讀不到，呼叫端要「稍後重試」而不是當失敗 */
+  getBlob(blobId: string): Promise<Uint8Array | null>;
 }
 
 interface CallOptions {
@@ -160,6 +163,22 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
     }
   }
 
+  /** 二進位通道：不吃 JSON，也不把 ArrayBuffer 塞進 JSON */
+  async function binary(path: string, method: 'PUT' | 'GET', body?: Uint8Array): Promise<Response> {
+    const send = (): Promise<Response> => {
+      const headers: Record<string, string> = { 'content-type': 'application/octet-stream' };
+      if (tokens) headers.authorization = `Bearer ${tokens.accessToken}`;
+      return doFetch(`${base}${path}`, {
+        method,
+        headers,
+        body: body ? (body.slice().buffer as ArrayBuffer) : undefined,
+      });
+    };
+    const first = await send();
+    if (first.status === 401 && (await refresh())) return send();
+    return first;
+  }
+
   return {
     async register(input) {
       const out = await call<AuthResult>('/api/auth/register', { method: 'POST', body: input, auth: false });
@@ -187,6 +206,33 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
     },
     async push(payload) {
       return call<PushResult>('/api/sync/push', { method: 'POST', body: payload });
+    },
+    async putBlob(blobId, bytes) {
+      const res = await binary(`/api/blob/${encodeURIComponent(blobId)}`, 'PUT', bytes);
+      const text = await res.text();
+      let parsed: Record<string, unknown> = {};
+      if (text) {
+        try {
+          parsed = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          parsed = {};
+        }
+      }
+      if (!res.ok) {
+        throw new SyncApiError(
+          res.status,
+          typeof parsed.code === 'string' ? parsed.code : 'http_error',
+          typeof parsed.message === 'string' ? parsed.message : `HTTP ${res.status}`,
+        );
+      }
+      return { size: Number(parsed.size ?? bytes.byteLength) };
+    },
+    async getBlob(blobId) {
+      const res = await binary(`/api/blob/${encodeURIComponent(blobId)}`, 'GET');
+      // 404 = 還沒傳播到這個節點（KV 最終一致）→ 回 null 讓引擎稍後重試
+      if (res.status === 404) return null;
+      if (!res.ok) throw new SyncApiError(res.status, 'blob_error', `HTTP ${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
     },
   };
 }
