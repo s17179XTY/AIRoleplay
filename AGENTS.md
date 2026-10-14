@@ -86,7 +86,7 @@
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| dev server 自己崩掉，报 EBUSY watch | 编辑器原子写入产生的临时目录被 Vite 监视 | vite.config.ts 里已忽略 `**/.*.tmpdir/**` 等 |
+| dev server 自己崩掉，报 EBUSY watch | Windows 上 fs.watch 撞到被占用/瞬时的文件（编辑器临时目录、`.env.local`、其它进程正在写的文件）；Vite 没给 FSWatcher 挂 error 监听，Node 直接把进程干掉 | 双保险：① `vite.config.ts` 的 `server.watch.ignored` 忽略临时文件/密钥/构建产物；② 插件 `dsh-watch-error-guard` 接管 `watcher.on('error')`，忽略这类瞬时错误（已用「反复创建+删除被监视文件」压测：8 轮后 dev server 仍存活） |
 | 某些页面比别的页面窄 | 曾经给外壳加过 max-width；或滚动条占位 | 外壳铺满 + 隐藏滚动条；layout.test.ts 守住 |
 | 字号设置不生效 | 只改了外层 div，被内部固定 px 覆盖 | 统一走 CSS 变量 `--dsh-fs`，内部用 em |
 | 「卡片不存在或已损坏」 | 早期版本只写了卡片索引行、没写 card.json | `ensureSeedCard()` 自愈；内置卡版本升级自动覆盖 |
