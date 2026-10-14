@@ -83,8 +83,12 @@ UI 操作 → 寫 Dexie（**本地立刻生效，不等網路**）→ storage �
 ### 4.1 恢復碼
 
 - 隨機 256 位元 → Base32（Crockford，去掉易混淆字元）→ 52 字元，顯示時分組 `XXXX-XXXX-…`。
-- 由恢復碼衍生**兩個互不相關的值**（與密碼同構）：`recoveryAuthKey = PBKDF2(code,"dsh1|rec|"+user, 200000)`（送伺服器驗證）、`recoveryKey` 本身用於解開 `recoveryWrappedDek`。
-- 伺服器只存 `recovery_hash`（recoveryAuthKey 再雜湊）與 `recovery_wrapped_dek`（密文）。**伺服器不保存恢復碼本身，站長也救不了沒抄的人。**
+- 由恢復碼衍生**三個互不相關的值**（與密碼同構）：
+  - `recoveryAuthKey = PBKDF2(code, "dsh1|recauth|"+user, 200000)` → 送伺服器驗證
+  - `recoveryHash = PBKDF2-SHA256(recoveryAuthKey, recovery_salt, 5000)` → 伺服器存這個（與 `auth_hash` 同理由，見 §5.2）
+  - `recoveryKey = PBKDF2(code, "dsh1|recwrap|"+user, 200000)` → 只在本機用來解開 `recoveryWrappedDek`
+- **`recauth` 與 `recwrap` 的鹽必須不同**：若同一個衍生值既送伺服器又用來解包，伺服器等於拿到解 `recoveryWrappedDek` 的鑰匙，零知識當場失效。這條是硬性要求。
+- 伺服器只存 `recovery_hash` 與 `recovery_wrapped_dek`（密文）。**伺服器不保存恢復碼本身，站長也救不了沒抄的人。**
 - 註冊成功後**強制顯示一次**，須勾選「我已抄下」才能繼續。
 
 ## 5. 身分與授權
@@ -144,7 +148,7 @@ rate(bucket TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL
 | GET | `/api/devices` / DELETE `/api/devices/:id` | 裝置列表 / 踢除 |
 | POST | `/api/admin/invites` | 需 `X-Admin-Secret`，產生一次性邀請碼 |
 
-- 伺服器端 `auth_hash = PBKDF2-SHA256(authKey, auth_salt, 200000)`，**與客戶端 KDF 參數無關**（authKey 已是高熵值，不需 600k）。
+- 伺服器端 `auth_hash = PBKDF2-SHA256(authKey, auth_salt, 5000)`，**與客戶端 KDF 參數無關**。迭代數從 200000 降到 5000 是平台限制造成的：Workers 免費方案每次呼叫只有 10 ms CPU，200000 迭代會直接超時；而離線暴破的單次成本本來就由客戶端的 600000 迭代決定，伺服器端只需要避免「等值比對／彩虹表」，5000 迭代足夠，且能用 `SERVER_KDF_ITERS` 常數在升級付費方案後調高。
 - 登入失敗一律回「帳號名或密碼錯誤」，不洩漏帳號是否存在。
 - 限流（`rate` 表 + 每分鐘窗口）：register/login 10 次/IP/分、recover 5 次/帳號/時、sync 120 次/帳號/分、blob 60 次/帳號/分。
 - CORS 白名單由 Worker 環境變數 `ALLOWED_ORIGINS` 控制（初始：`https://air-roleplay.pages.dev`）。
