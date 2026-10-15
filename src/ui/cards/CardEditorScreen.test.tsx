@@ -68,4 +68,29 @@ describe('卡片编辑器', () => {
     expect(draft.worldbook).toHaveLength(2);
     expect(packageToDraft(draftToPackage(draft, pkg)).worldbook).toHaveLength(2);
   });
+
+  it('没登录时「上传图片」被禁用，但已有封面照常显示', async () => {
+    const pkg = seedPackage();
+    const id = await saveCardPackage(pkg);
+    render(<CardEditorScreen cardId={id} />);
+    await waitFor(() => expect(screen.getByText(/寻找新XP/)).toBeTruthy());
+
+    // 内置卡自带一张 cover.svg → 应该有 <img>，而且上传按钮是禁用的
+    await waitFor(() => expect(screen.getByTestId('upload-cover').hasAttribute('disabled')).toBe(true));
+    expect(screen.getByTestId('upload-avatar').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText(/登录后才能上传图片/)).toBeTruthy();
+    expect(document.querySelectorAll('img').length).toBeGreaterThan(0);
+  });
+
+  it('基本页不再有「主人公设定 / 前情提要 / 开场白」三个输入框', async () => {
+    const pkg = seedPackage();
+    const id = await saveCardPackage(pkg);
+    render(<CardEditorScreen cardId={id} />);
+    await waitFor(() => expect(screen.getByText(/寻找新XP/)).toBeTruthy());
+    expect(screen.queryByText('主人公设定')).toBeNull();
+    expect(screen.queryByText('前情提要')).toBeNull();
+    expect(screen.queryByText(/开场白/)).toBeNull();
+    // 简介还在，而且说明改成「不会进提示词」
+    expect(screen.getByText(/简介（只在卡片列表显示，不会进提示词）/)).toBeTruthy();
+  });
 });

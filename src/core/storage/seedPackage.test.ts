@@ -18,4 +18,17 @@ describe('演示卡包', () => {
     expect(entries).toHaveLength(0);
     expect(pkg.texts.find((t) => t.path === 'ui/index.html')!.text).toContain('generated-content-preview');
   });
+
+  it('导出卡片默认可以不带图片（避免夹带文件／包太大）', () => {
+    const pkg = seedPackage();
+    expect(pkg.assets.length).toBeGreaterThan(0);
+
+    expect(unpackCard(packCard(pkg)).assets).toHaveLength(pkg.assets.length);
+
+    const without = unpackCard(packCard(pkg, { includeAssets: false }));
+    expect(without.assets).toHaveLength(0);
+    // 卡片本体（card.json 与互动页）还在
+    expect(without.json.name).toBe(pkg.json.name);
+    expect(without.texts.map((t) => t.path)).toContain('ui/index.html');
+  });
 });

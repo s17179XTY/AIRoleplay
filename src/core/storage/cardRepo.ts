@@ -37,6 +37,7 @@ export async function saveCardPackage(pkg: CardPackage): Promise<string> {
     await db.assets.put({ id: assetId, mime: a.mime, size: a.bytes.byteLength, bytes: buffer });
     await db.cardFiles.put({ cardId: id, path: a.path, kind: 'asset', assetId });
     if (pkg.json.cover === a.path) await db.cards.update(id, { coverAssetId: assetId });
+    if (pkg.json.avatar === a.path) await db.cards.update(id, { avatarAssetId: assetId });
   }
   return id;
 }

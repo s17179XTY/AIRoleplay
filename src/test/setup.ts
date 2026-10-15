@@ -11,6 +11,22 @@ if (jsdomCrypto && !jsdomCrypto.subtle) {
   Object.defineProperty(jsdomCrypto, 'subtle', { value: webcrypto.subtle, configurable: true });
 }
 
+// jsdom 也沒實作 URL.createObjectURL / revokeObjectURL（图片预览要用）。
+// 补一个假的：只回一个可辨识的字串，测试里不会真的去读它。
+if (typeof URL.createObjectURL !== 'function') {
+  let seq = 0;
+  Object.defineProperty(URL, 'createObjectURL', {
+    value: () => `blob:jsdom/${++seq}`,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    value: () => undefined,
+    configurable: true,
+    writable: true,
+  });
+}
+
 afterEach(() => {
   cleanup();
 });

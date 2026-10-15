@@ -32,6 +32,8 @@ export interface DshCardJson {
   description: string;
   tags: string[];
   cover?: string;
+  /** 聊天时显示的头像（卡片包里的 assets 路径） */
+  avatar?: string;
   prompts: { pre: string; prompt: string; post: string };
   persona: { name: string; gender: string; intro: string };
   scenario: string;

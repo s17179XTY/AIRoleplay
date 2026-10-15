@@ -12,7 +12,7 @@ export interface MessageActions {
 }
 
 export default function MessageBubble({
-  role, raw, onOption, showOptions, streaming, rules, actions, avatarText,
+  role, raw, onOption, showOptions, streaming, rules, actions, avatarText, avatarUrl,
 }: {
   role: 'user' | 'assistant';
   raw: string;
@@ -22,6 +22,8 @@ export default function MessageBubble({
   rules?: RegexRule[];
   actions?: MessageActions;
   avatarText?: string;
+  /** 卡片自带的头像；没有就显示 avatarText 的首字 */
+  avatarUrl?: string;
 }) {
   const result = useMemo(() => renderMessage(raw, { rules }), [raw, rules]);
   const [showActions, setShowActions] = useState(false);
@@ -52,7 +54,9 @@ export default function MessageBubble({
 
   return (
     <div className="flex items-start gap-2 px-3 py-2">
-      <div className="dsh-avatar">{avatarText || 'AI'}</div>
+      <div className="dsh-avatar overflow-hidden">
+        {avatarUrl ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" /> : (avatarText || 'AI')}
+      </div>
       <div className="flex min-w-0 flex-1 flex-col">
         {/*
           這裡刻意用 div 而不是 button：氣泡內容裡可能還有按鈕（折疊面板的展開鈕、選項按鈕），

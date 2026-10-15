@@ -20,11 +20,17 @@ export function guessMime(path: string): string {
   return 'application/octet-stream';
 }
 
-export function packCard(pkg: CardPackage): Uint8Array {
+/**
+ * 打成 zip。
+ * `includeAssets: false` 时不写入 assets/*（导出卡片默认不含图片：避免夹带文件，
+ * 也避免把整个卡片包撑大）；全量备份走的是另一条路（backup.ts，一定会带图）。
+ */
+export function packCard(pkg: CardPackage, opts: { includeAssets?: boolean } = {}): Uint8Array {
+  const includeAssets = opts.includeAssets !== false;
   const files: Record<string, Uint8Array> = {};
   files['card.json'] = strToU8(serializeCardJson(pkg.json));
   for (const f of pkg.texts) files[f.path] = strToU8(f.text);
-  for (const a of pkg.assets) files[a.path] = a.bytes;
+  if (includeAssets) for (const a of pkg.assets) files[a.path] = a.bytes;
   return zipSync(files, { level: 6 });
 }
 

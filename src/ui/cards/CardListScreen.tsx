@@ -7,9 +7,16 @@ import { useNav } from '../../state/useNav';
 import { useSession } from '../../state/useSession';
 import { useData } from '../../state/useData';
 import { downloadBytes, readFileBytes } from './fileUtils';
+import { useAssetUrl } from './useAssetUrl';
 
-export default function CardListScreen() {
-  const [cards, setCards] = useState<CardRecord[]>([]);
+/** 有封面就显示封面，没有就退回原来的「首字方块」 */
+function CardCover({ assetId, fallback }: { assetId?: string; fallback: string }) {
+  const url = useAssetUrl(assetId);
+  if (url) return <img src={url} alt="" className="h-full w-full object-cover" />;
+  return <>{fallback}</>;
+}
+
+export default function CardListScreen() {  const [cards, setCards] = useState<CardRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const openCard = useSession((s) => s.openCard);
@@ -64,7 +71,11 @@ export default function CardListScreen() {
   const onExport = async (cardId: string, name: string) => {
     const pkg = await loadCardPackage(cardId);
     if (!pkg) return;
-    downloadBytes(packCard(pkg), name + '.card.zip', 'application/zip');
+    // 默认不含图片（避免夹带文件、也避免把包撑大）；备份走「导出全部数据」那条路，一定会带图
+    const includeAssets = pkg.assets.length > 0
+      ? window.confirm(`导出「${name}」\n\n确定 = 含 ${pkg.assets.length} 张图片\n取消 = 不含图片（推荐，包更小）`)
+      : false;
+    downloadBytes(packCard(pkg, { includeAssets }), name + '.card.zip', 'application/zip');
   };
 
   const onDelete = async (cardId: string) => {
@@ -95,10 +106,10 @@ export default function CardListScreen() {
           <div key={c.id} className="dsh-card mb-3 p-3.5">
             <div className="flex items-start gap-3">
               <div
-                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-[18px] font-semibold text-white"
+                className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-2xl text-[18px] font-semibold text-white"
                 style={{ background: 'linear-gradient(140deg,#7bb8ff,#0072e3)', boxShadow: '0 6px 16px rgba(0,114,227,0.28)' }}
               >
-                {Array.from(c.name)[0] ?? '卡'}
+                <CardCover assetId={c.coverAssetId} fallback={Array.from(c.name)[0] ?? '卡'} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[14px] font-semibold text-slate-800">{c.name}</div>

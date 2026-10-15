@@ -4,6 +4,7 @@ import { useSettingFlag } from '../../state/useSetting';
 import { useData } from '../../state/useData';
 import { useNav } from '../../state/useNav';
 import { updateSummaryText } from '../../core/storage/memoryStore';
+import { useBlobUrl } from '../cards/useAssetUrl';
 import { db } from '../../core/storage/db';
 import type { ChatRecord } from '../../core/storage/types';
 import MessageBubble from './MessageBubble';
@@ -55,8 +56,14 @@ export default function PlayScreen() {
   const [follow, setFollow] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const card = useSession((s) => s.card);
   const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
   const avatarText = cardName ? Array.from(cardName)[0] : 'AI';
+  // 卡片自带的头像（聊天时显示在气泡旁边）；没有就退回「首字」
+  const avatarAsset = card && card.json.avatar
+    ? card.assets.find((a) => a.path === card.json.avatar)
+    : undefined;
+  const avatarUrl = useBlobUrl(avatarAsset?.bytes, avatarAsset?.mime);
   const hasMessages = messages.length > 0 || draft.length > 0;
   // 卡片打开时互动页占满聊天框；发出第一条消息后自动收起
   const showPage = Boolean(cardUiHtml) && (!hasMessages || pageOpen);
@@ -167,6 +174,7 @@ export default function PlayScreen() {
                     raw={m.raw}
                     rules={regexRules}
                     avatarText={m.role === 'assistant' ? avatarText : undefined}
+                    avatarUrl={m.role === 'assistant' ? (avatarUrl ?? undefined) : undefined}
                     showOptions={m.id === lastId && !draft && !streaming}
                     onOption={(t) => void send(t)}
                     actions={{
@@ -178,11 +186,13 @@ export default function PlayScreen() {
                   />
                 ))}
               {draft && (
-                <MessageBubble role="assistant" raw={draft} streaming showOptions={false} onOption={() => {}} avatarText={avatarText} />
+                <MessageBubble role="assistant" raw={draft} streaming showOptions={false} onOption={() => {}} avatarText={avatarText} avatarUrl={avatarUrl ?? undefined} />
               )}
               {waiting && (
                 <div className="flex items-start gap-2 px-3 py-2" data-testid="waiting-hint">
-                  <div className="dsh-avatar">{avatarText}</div>
+                  <div className="dsh-avatar overflow-hidden">
+                    {avatarUrl ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" /> : avatarText}
+                  </div>
                   <div className="dsh-bubble flex items-center gap-2 px-3.5 py-3 text-slate-500">
                     <span className="flex gap-1">
                       <i className="dsh-dot" />

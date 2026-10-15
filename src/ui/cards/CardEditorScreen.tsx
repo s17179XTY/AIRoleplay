@@ -5,6 +5,7 @@ import type { CardPackage } from '../../core/cards/package';
 import { draftToPackage, newRegexScript, newWorldbookEntry, packageToDraft, type CardDraft } from './draft';
 import { useNav } from '../../state/useNav';
 import { useSession } from '../../state/useSession';
+import ImageSlots from './ImageSlots';
 
 type Section = 'basic' | 'prompts' | 'worldbook' | 'regex' | 'ui';
 
@@ -109,6 +110,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string | null }) 
       <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {section === 'basic' && (
           <>
+            <ImageSlots pkg={base} onChange={setBase} />
             <Field label="卡片名">
               <input className={inputClass} value={draft.json.name}
                 onChange={(e) => patchJson({ name: e.target.value })} />
@@ -117,7 +119,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string | null }) 
               <input className={inputClass} value={draft.json.author}
                 onChange={(e) => patchJson({ author: e.target.value })} />
             </Field>
-            <Field label="简介（也会作为角色简介注入提示词）">
+            <Field label="简介（只在卡片列表显示，不会进提示词）">
               <textarea className={inputClass} rows={3} value={draft.json.description}
                 onChange={(e) => patchJson({ description: e.target.value })} />
             </Field>
@@ -125,32 +127,25 @@ export default function CardEditorScreen({ cardId }: { cardId: string | null }) 
               <input className={inputClass} value={draft.json.tags.join(',')}
                 onChange={(e) => patchJson({ tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })} />
             </Field>
-            <Field label="主人公设定">
-              <textarea className={inputClass} rows={4} value={draft.json.persona.intro}
-                onChange={(e) => patchJson({ persona: { ...draft.json.persona, intro: e.target.value } })} />
-            </Field>
-            <Field label="前情提要">
-              <textarea className={inputClass} rows={3} value={draft.json.scenario}
-                onChange={(e) => patchJson({ scenario: e.target.value })} />
-            </Field>
-            <Field label="开场白（支持 HTML，可留空）">
-              <textarea className={inputClass} rows={5} value={draft.json.firstMessage}
-                onChange={(e) => patchJson({ firstMessage: e.target.value })} />
-            </Field>
           </>
         )}
 
         {section === 'prompts' && (
           <>
-            <Field label="前置词（最先注入）">
+            <div className="dsh-card p-3.5 text-[11px] leading-relaxed text-slate-500">
+              实际注入顺序：<br />
+              卡片前缀词 → 全局提示词 → 全局前缀词 → 卡片提示词 → MOD → 主人公设定 → 前情提要
+              → 互动页的【初始信息设定】 → 世界书 → 更早的对话摘要 → 历史消息 → 全局后缀词 → 卡片后缀词 → 本轮输入
+            </div>
+            <Field label="卡片前缀词（整份提示词的最前面）">
               <textarea className={inputClass} rows={5} value={draft.json.prompts.pre}
                 onChange={(e) => patchJson({ prompts: { ...draft.json.prompts, pre: e.target.value } })} />
             </Field>
-            <Field label="提示词（主系统提示）">
+            <Field label="卡片提示词（主系统提示）">
               <textarea className={inputClass} rows={10} value={draft.json.prompts.prompt}
                 onChange={(e) => patchJson({ prompts: { ...draft.json.prompts, prompt: e.target.value } })} />
             </Field>
-            <Field label="后置词（历史之后注入）">
+            <Field label="卡片后缀词（历史之后注入）">
               <textarea className={inputClass} rows={5} value={draft.json.prompts.post}
                 onChange={(e) => patchJson({ prompts: { ...draft.json.prompts, post: e.target.value } })} />
             </Field>
