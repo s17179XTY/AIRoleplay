@@ -1,47 +1,80 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from './db';
-import { ingestMemories, listMemories, toMemoryItems } from './memoryStore';
+import {
+  addSummary, deleteSummary, listSummaries, toSummaryItems, trimSummaries, updateSummaryText,
+} from './memoryStore';
+import { SUMMARY_KEEP } from './types';
 
 beforeEach(async () => {
   await db.memories.clear();
 });
 
-const mk = (text: string, dateLabel = '2026-10-13') => ({ tier: 'recent' as const, text, dateLabel });
+const add = (i: number) => addSummary({
+  chatId: 'c1',
+  userText: `用户${i}`,
+  assistantText: `叙事${i}`,
+  text: `[用户] 用户${i}\n[叙事] 叙事${i}`,
+  dateLabel: `10-${String(i).padStart(2, '0')}`,
+  origin: 'model',
+});
 
-describe('记忆托管', () => {
-  it('写入近期记忆并可回注', async () => {
-    await ingestMemories('c1', 'm1', [mk('第一件事')], 4);
-    const list = await listMemories('c1');
-    expect(list).toHaveLength(1);
-    expect(list[0].tier).toBe('recent');
-    expect(toMemoryItems(list)[0].text).toBe('第一件事');
+describe('摘要库', () => {
+  it('写入后按 order 升序读回，且能转成注入用的 SummaryItem', async () => {
+    await add(1);
+    await add(2);
+    const list = await listSummaries('c1');
+    expect(list).toHaveLength(2);
+    expect(list[0].dateLabel).toBe('10-01');
+    expect(list[0].tier).toBe('summary');
+
+    const items = toSummaryItems(list);
+    expect(items[0].userText).toBe('用户1');
+    expect(items[0].assistantText).toBe('叙事1');
+    expect(items[0].text).toContain('[叙事] 叙事1');
   });
 
-  it('一次溢出多条时合并区间并标注日期范围', async () => {
-    await ingestMemories('c2', 'm1', [mk('A事', '2026-10-01'), mk('B事', '2026-10-02'), mk('C事', '2026-10-03')], 1);
-    const list = await listMemories('c2');
-    const permanent = list.filter((r) => r.tier === 'permanent');
-    expect(permanent).toHaveLength(1);
-    expect(permanent[0].text).toContain('A事');
-    expect(permanent[0].text).toContain('B事');
-    expect(permanent[0].dateLabel).toBe('2026-10-01 至 2026-10-02');
-    expect(list.filter((r) => r.tier === 'recent')).toHaveLength(1);
+  it('上限内不合并', async () => {
+    for (let i = 1; i <= SUMMARY_KEEP; i += 1) await add(i);
+    const r = await trimSummaries('c1');
+    expect(r.merged).toBe(0);
+    expect(await listSummaries('c1')).toHaveLength(SUMMARY_KEEP);
   });
 
-  it('超过上限时把最旧的合并成永久记忆', async () => {
-    for (let i = 1; i <= 4; i += 1) {
-      await ingestMemories('c1', 'm' + i, [mk('第' + i + '件事', '2026-10-0' + i)], 4);
-    }
-    await ingestMemories('c1', 'm5', [mk('第五件事', '2026-10-05')], 4);
-    const list = await listMemories('c1');
-    const permanent = list.filter((r) => r.tier === 'permanent');
-    const recent = list.filter((r) => r.tier === 'recent');
-    expect(permanent).toHaveLength(1);
-    expect(permanent[0].text).toContain('第1件事');
-    expect(permanent[0].dateLabel).toBe('2026-10-01');
-    expect(recent).toHaveLength(4);
-    const items = toMemoryItems(list);
-    expect(items[0].tier).toBe('permanent');
-    expect(items[items.length - 1].text).toBe('第五件事');
+  it('超过上限时，最老的 5 条本地拼接成一条（保留分段与时间范围）', async () => {
+    for (let i = 1; i <= SUMMARY_KEEP + 1; i += 1) await add(i);
+
+    const r = await trimSummaries('c1');
+
+    expect(r.merged).toBe(1);
+    const list = await listSummaries('c1');
+    // 21 条 → 最老 5 条併成 1 条 → 17 条（回到上限以内）
+    expect(list).toHaveLength(SUMMARY_KEEP + 1 - 5 + 1);
+    expect(list).toHaveLength(17);
+    expect(list[0].origin).toBe('merged');
+    expect(list[0].userText).toContain('用户1');
+    expect(list[0].userText).toContain('用户5');
+    expect(list[0].assistantText).toContain('叙事5');
+    expect(list[0].text).toContain('[叙事]');
+    expect(list[0].dateLabel).toContain('10-01');
+    expect(list[0].dateLabel).toContain('10-05');
+    // 被合并掉的旧条目真的删了
+    expect(list.some((s) => s.userText === '用户1')).toBe(false);
+  });
+
+  it('可以手动改与删（AI 压歪了还能救）', async () => {
+    const row = await add(1);
+    await updateSummaryText(row.id, '[用户] 改过的用户段\n[叙事] 改过的叙事段', '改过的用户段', '改过的叙事段');
+    const after = (await listSummaries('c1'))[0];
+    expect(after.userText).toBe('改过的用户段');
+
+    await deleteSummary(row.id);
+    expect(await listSummaries('c1')).toHaveLength(0);
+  });
+
+  it('不同会话的摘要互不影响', async () => {
+    await add(1);
+    await addSummary({ chatId: 'c2', text: 'x', dateLabel: '10-01', origin: 'model' });
+    expect(await listSummaries('c1')).toHaveLength(1);
+    expect(await listSummaries('c2')).toHaveLength(1);
   });
 });
