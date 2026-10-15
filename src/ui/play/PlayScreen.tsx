@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSession } from '../../state/useSession';
 import { useSettingFlag } from '../../state/useSetting';
 import { useData } from '../../state/useData';
+import { useNav } from '../../state/useNav';
+import { updateSummaryText } from '../../core/storage/memoryStore';
 import { db } from '../../core/storage/db';
 import type { ChatRecord } from '../../core/storage/types';
 import MessageBubble from './MessageBubble';
 import CardPagePanel from './CardPagePanel';
 import Composer from './Composer';
+import ContextHud from './ContextHud';
 
 function copyText(text: string): void {
   void navigator.clipboard?.writeText(text).catch(() => undefined);
@@ -19,7 +22,6 @@ export default function PlayScreen() {
   const ready = useSession((s) => s.ready);
   const cardId = useSession((s) => s.cardId);
   const cardName = useSession((s) => s.cardName);
-  const modelLabel = useSession((s) => s.modelLabel);
   const messages = useSession((s) => s.messages);
   const draft = useSession((s) => s.draft);
   const streaming = useSession((s) => s.streaming);
@@ -40,7 +42,10 @@ export default function PlayScreen() {
   const renameChat = useSession((s) => s.renameChat);
   const deleteChat = useSession((s) => s.deleteChat);
   const dataVersion = useData((s) => s.version);
-  const [memoryOn, setMemoryOn] = useSettingFlag('memoryEnabled', true);
+  const [memoryOn, setMemoryOn] = useSettingFlag('summaryEnabled', true);
+  const showToast = useNav((s) => s.showToast);
+  const [editingSummary, setEditingSummary] = useState<string | null>(null);
+  const [summaryDraft, setSummaryDraft] = useState('');
 
   const [pageOpen, setPageOpen] = useState(false);
   const [sheet, setSheet] = useState<'chats' | 'memory' | null>(null);
@@ -83,6 +88,14 @@ export default function PlayScreen() {
     setFollow(true);
   }, []);
 
+  /** 回到最上面（找更早的内容时用） */
+  const scrollToTop = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    setFollow(false);
+  }, []);
+
   useEffect(() => {
     if (showPage || !follow) return;
     const el = scrollRef.current;
@@ -117,10 +130,7 @@ export default function PlayScreen() {
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="truncate text-[15px] font-semibold text-slate-800">{cardName || '加载中…'}</div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#34c759]" />
-              <span className="truncate">{modelLabel}</span>
-            </div>
+            <ContextHud />
           </div>
           <div className="flex shrink-0 gap-2">
             {cardUiHtml && hasMessages && !pageOpen && (
@@ -160,7 +170,7 @@ export default function PlayScreen() {
                     showOptions={m.id === lastId && !draft && !streaming}
                     onOption={(t) => void send(t)}
                     actions={{
-                      onCopy: () => copyText(m.raw),
+                      onCopy: () => { copyText(m.raw); showToast('已复制'); },
                       onRegenerate: m.role === 'assistant' ? () => void regenerate() : undefined,
                       onBranch: () => void branchTo(m.id),
                       onDelete: () => void deleteMessage(m.id),
@@ -191,16 +201,39 @@ export default function PlayScreen() {
               <div className="h-2" />
             </div>
 
-            {!follow && (
-              <button
-                type="button"
-                onClick={scrollToBottom}
-                data-testid="scroll-to-bottom"
-                className="dsh-float absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-[rgba(20,24,33,0.82)] px-3.5 py-2 text-[12px] text-white backdrop-blur"
-              >
-                回到底部
-              </button>
-            )}
+            {/* 两个圆形图标按钮，固定在聊天区右下角（使用者要求：不要文字、不要放中间） */}
+            <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-2">
+              {/*
+                回到顶部：只有在往下滚过一段之后才有意义。
+                follow === false 就代表使用者已经离开底部，这时两个都给。
+              */}
+              {!follow && (
+                <button
+                  type="button"
+                  aria-label="回到顶部"
+                  data-testid="scroll-to-top"
+                  onClick={scrollToTop}
+                  className="dsh-float flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(20,24,33,0.82)] text-white backdrop-blur"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 3 L14 11 L2 11 Z" fill="currentColor" />
+                  </svg>
+                </button>
+              )}
+              {!follow && (
+                <button
+                  type="button"
+                  aria-label="回到底部"
+                  data-testid="scroll-to-bottom"
+                  onClick={scrollToBottom}
+                  className="dsh-float flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(20,24,33,0.82)] text-white backdrop-blur"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 13 L2 5 L14 5 Z" fill="currentColor" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </>
         )}
       </main>
@@ -245,10 +278,11 @@ export default function PlayScreen() {
                         </button>
                       </div>
                     ) : (
-                      <>
+                      /* 右侧图标按钮（参考图：铅笔＝改名、⋮＝删除），不再占一整行 */
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          className="w-full text-left"
+                          className="min-w-0 flex-1 text-left"
                           onClick={() => { void openChat(c.id); setSheet(null); }}
                         >
                           <div className="flex items-center gap-2">
@@ -261,27 +295,33 @@ export default function PlayScreen() {
                             {new Date(c.updatedAt).toLocaleString('zh-CN')}
                           </div>
                         </button>
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            type="button"
-                            className="dsh-chip"
-                            onClick={() => { setEditingChat(c.id); setTitleDraft(c.title); }}
-                          >
-                            改名
-                          </button>
-                          <button
-                            type="button"
-                            className="dsh-chip"
-                            style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.22)' }}
-                            onClick={async () => {
-                              await deleteChat(c.id);
-                              await loadChats();
-                            }}
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </>
+                        <button
+                          type="button"
+                          aria-label={`改名 ${c.title}`}
+                          className="shrink-0 rounded-full p-2 text-slate-400 active:bg-black/5"
+                          onClick={() => { setEditingChat(c.id); setTitleDraft(c.title); }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                            <path d="M3 13h2.2l7-7-2.2-2.2-7 7V13z" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                            <path d="M10.6 4.6l1.6-1.6 2.2 2.2-1.6 1.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`删除 ${c.title}`}
+                          className="shrink-0 rounded-full p-2 text-slate-400 active:bg-black/5"
+                          onClick={async () => {
+                            await deleteChat(c.id);
+                            await loadChats();
+                          }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                            <circle cx="8" cy="3.5" r="1.3" fill="currentColor" />
+                            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+                            <circle cx="8" cy="12.5" r="1.3" fill="currentColor" />
+                          </svg>
+                        </button>
+                      </div>
                     )}
                   </div>
                 ))}
@@ -295,7 +335,7 @@ export default function PlayScreen() {
               <>
                 <div className="dsh-card mb-3 p-3.5">
                   <div className="flex items-center justify-between">
-                    <div className="text-[13px] font-medium text-slate-700">记忆托管</div>
+                    <div className="text-[13px] font-medium text-slate-700">记忆库（自动摘要）</div>
                     <button
                       type="button"
                       data-testid="memory-toggle"
@@ -315,28 +355,73 @@ export default function PlayScreen() {
                     </button>
                   </div>
                   <div className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
-                    开启后，AI 回复里的「近期记忆 / 永久记忆」区块会被自动收集起来，
-                    满约定条数（默认 6 条，可在设置里改）就归档成永久记忆，并在下一轮提示词里回注，
-                    让 AI 记得之前发生过什么。关掉后记忆区块只当作普通文字显示，不再解析、也不再回注。
+                    开启后：掉出上下文的对话会**按对**（一条你的输入 + 一条 AI 回复）交给模型压成摘要，
+                    存进这里，并在下一轮以「更早的对话摘要」回注 —— 让 AI 记得窗口外面发生过什么。
+                    摘要分「用户 / 叙事」两段，AI 不会把你的选择当成自己写的。
+                    关掉后：窗口外的内容不再记录（长对话会失忆）。
                   </div>
                 </div>
                 {!memoryOn && (
                   <div className="mb-2 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-                    记忆托管已关闭，下面的条目不会再更新。
+                    自动摘要已关闭，下面的条目不会再增加。
                   </div>
                 )}
                 {memories.length === 0 && (
-                  <div className="py-8 text-center text-[13px] text-slate-400">还没有记忆，聊几轮就会自动归档</div>
+                  <div className="py-8 text-center text-[13px] text-slate-400">
+                    还没有摘要。聊到超出上下文条数时，更早的对话会自动压成摘要出现在这里。
+                  </div>
                 )}
                 {memories.map((m) => (
                   <div key={m.id} className="dsh-card mb-2 px-3.5 py-2.5">
                     <div className="flex items-center justify-between text-[11px]">
-                      <span className={m.tier === 'permanent' ? 'text-[#0072e3]' : 'text-slate-400'}>
-                        {m.tier === 'permanent' ? '永久记忆' : '近期记忆'} · {m.dateLabel}
+                      <span className="text-[#0072e3]">
+                        {m.dateLabel}
+                        {m.rangeLabel ? ` · ${m.rangeLabel}` : ''}
+                        {m.origin === 'merged' ? ' · 合并' : m.origin === 'local-skeleton' ? ' · 骨架（模型失败）' : ''}
                       </span>
-                      <button type="button" className="text-red-400" onClick={() => void removeMemory(m.id)}>删除</button>
+                      <span className="flex gap-3">
+                        <button
+                          type="button"
+                          className="text-slate-400"
+                          onClick={() => { setEditingSummary(m.id); setSummaryDraft(m.text); }}
+                        >
+                          编辑
+                        </button>
+                        <button type="button" className="text-red-400" onClick={() => void removeMemory(m.id)}>删除</button>
+                      </span>
                     </div>
-                    <div className="mt-1.5 whitespace-pre-wrap text-[12px] leading-relaxed text-slate-600">{m.text}</div>
+                    {editingSummary === m.id ? (
+                      <div className="mt-1.5 space-y-2">
+                        <textarea
+                          className="dsh-input w-full px-3 py-2 text-[12px] outline-none"
+                          rows={5}
+                          value={summaryDraft}
+                          onChange={(e) => setSummaryDraft(e.target.value)}
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            className="dsh-btn flex-1 py-2 text-[12px]"
+                            onClick={async () => {
+                              await updateSummaryText(m.id, summaryDraft);
+                              setEditingSummary(null);
+                              showToast('摘要已更新');
+                            }}
+                          >
+                            保存
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-xl border border-black/10 px-4 py-2 text-[12px] text-slate-500"
+                            onClick={() => setEditingSummary(null)}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-1.5 whitespace-pre-wrap text-[12px] leading-relaxed text-slate-600">{m.text}</div>
+                    )}
                   </div>
                 ))}
               </>

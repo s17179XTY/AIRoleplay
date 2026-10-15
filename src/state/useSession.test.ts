@@ -117,17 +117,25 @@ describe('会话 store', () => {
     expect(left.length).toBe(before - 2);
   });
 
-  it('branchTo 之后世界线缩短，再 send 会长出新分支', async () => {
+  it('branchTo 之后世界线缩短，并**自动长出一条新的 AI 回复**（不用自己再送一次）', async () => {
     await useSession.getState().init();
     await useSession.getState().send('第一句');
     const firstUser = useSession.getState().messages[0];
+    const oldAssistant = useSession.getState().messages[1];
+
     await useSession.getState().branchTo(firstUser.id);
-    expect(useSession.getState().messages).toHaveLength(1);
+
+    const after = useSession.getState().messages;
+    expect(after).toHaveLength(2);
+    expect(after[0].id).toBe(firstUser.id);
+    expect(after[1].role).toBe('assistant');
+    expect(after[1].id).not.toBe(oldAssistant.id);   // 是新生成的分支
+
     await useSession.getState().send('换个方向');
-    expect(useSession.getState().messages).toHaveLength(3);
+    expect(useSession.getState().messages).toHaveLength(4);
     const all = await db.messages.where('chatId').equals(useSession.getState().chatId!).toArray();
     // 原助理回复仍留在库里，但已不在当前世界线上
-    expect(all.length).toBe(4);
+    expect(all.length).toBe(5);
   });
 
   it('stop() 中止生成：保住已吐出的内容、状态是 incomplete、不算错误', async () => {

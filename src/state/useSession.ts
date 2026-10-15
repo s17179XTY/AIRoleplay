@@ -426,6 +426,56 @@ export const useSession = create<SessionState>((set, get) => {
     });
   };
 
+  /**
+   * 一次完整的「生成一輪」：先压摘要（若需要）→ 再串流主回覆。
+   * send 与 branchTo 共用它，顺序固定，两条流不会并发。
+   */
+  const runTurn = async (input: {
+    chatId: string;
+    card: CardPackage;
+    parentId: string;
+    userText: string;
+    before: MessageRecord[];
+    controller: AbortController;
+  }): Promise<void> => {
+    const { chatId, card, parentId, userText, before, controller } = input;
+    const settings = await readContextSettings();
+    const active = await getActive();
+    const summaryStreamer = active ? adapterFor(active.provider.protocol) : adapter;
+    const summaryCfg = active
+      ? {
+          id: active.provider.id, baseUrl: active.provider.baseUrl,
+          apiKey: active.provider.apiKey, extraHeaders: active.provider.extraHeaders,
+        }
+      : MOCK_CFG;
+    await ensureSummaries({
+      chatId,
+      path: before,
+      settings,
+      streamer: summaryStreamer,
+      cfg: summaryCfg,
+      model: active?.preset.model ?? 'mock',
+      signal: controller.signal,
+    });
+    if (controller.signal.aborted) {
+      set({ messages: await pathToLeaf(chatId, parentId), draft: '', streaming: false, error: null });
+      return;
+    }
+
+    const chat = await db.chats.get(chatId);
+    const configRow = await db.configs.where('scope').equals('global').first();
+    await streamReply({
+      chatId,
+      parentId,
+      userText,
+      historyPath: before,
+      card,
+      setup: chat?.promptSnapshot ?? '',
+      configRow,
+      controller,
+    });
+  };
+
   return {
     ready: false,
     cardId: null,
@@ -659,7 +709,6 @@ export const useSession = create<SessionState>((set, get) => {
 
       const chat = await db.chats.get(chatId);
       const parentId = chat?.currentLeafId ?? null;
-      const setupPrompt = chat?.promptSnapshot ?? '';
 
       const userMsg: MessageRecord = {
         id: newId('m_'), chatId, parentId, role: 'user', raw: clean,
@@ -673,42 +722,7 @@ export const useSession = create<SessionState>((set, get) => {
       // 畫面上要立刻看到剛送出的使用者訊息；提示詞的歷史則不含這一則（它在 userInput 裡）
       set({ messages: historyPath, draft: '', streaming: true, error: null });
 
-      // 先把掉出窗口的交换压成摘要，再做主生成（顺序固定，两条流不会并发）
-      const settings = await readContextSettings();
-      const active = await getActive();
-      const summaryStreamer = active ? adapterFor(active.provider.protocol) : adapter;
-      const summaryCfg = active
-        ? {
-            id: active.provider.id, baseUrl: active.provider.baseUrl,
-            apiKey: active.provider.apiKey, extraHeaders: active.provider.extraHeaders,
-          }
-        : MOCK_CFG;
-      await ensureSummaries({
-        chatId,
-        path: before,
-        settings,
-        streamer: summaryStreamer,
-        cfg: summaryCfg,
-        model: active?.preset.model ?? 'mock',
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) {
-        // 連摘要都還沒做完就被停掉：保留剛送出的使用者訊息，不要讓它從畫面上消失
-        set({ messages: await pathToLeaf(chatId, userMsg.id), draft: '', streaming: false, error: null });
-        return;
-      }
-
-      const configRow = await db.configs.where('scope').equals('global').first();
-      await streamReply({
-        chatId,
-        parentId: userMsg.id,
-        userText: clean,
-        historyPath: before,
-        card,
-        setup: setupPrompt,
-        configRow,
-        controller,
-      });
+      await runTurn({ chatId, card, parentId: userMsg.id, userText: clean, before, controller });
     },
 
     stop: () => {
@@ -739,8 +753,10 @@ export const useSession = create<SessionState>((set, get) => {
       const { cardId, card } = get();
       if (!cardId || !card) return;
       const chatId = newId('chat_');
+      // 默认名字从「对话1」开始递增（使用者要求：不要再叫「卡片名 + 日期」）
+      const existing = await db.chats.where('cardId').equals(cardId).count();
       await db.chats.add({
-        id: chatId, cardId, title: card.json.name + ' ' + new Date().toLocaleDateString('zh-CN'),
+        id: chatId, cardId, title: `对话${existing + 1}`,
         vars: {}, promptSnapshot: '', providerId: null, modelPresetId: null, currentLeafId: null,
         createdAt: Date.now(), updatedAt: Date.now(), archived: 0,
       });
@@ -814,35 +830,50 @@ export const useSession = create<SessionState>((set, get) => {
       set({ memories, memoryCount: memories.length });
     },
 
+    /**
+     * 「从这里重开」：把世界线指针移回这一条，并**立刻生成一条新的 AI 回复**。
+     * 以前只移动指针、不生成，使用者还得自己复制一次再送 —— 那不算重开。
+     */
     branchTo: async (messageId: string) => {
-      const { chatId } = get();
-      if (!chatId || get().streaming) return;
+      const { chatId, card } = get();
+      if (!chatId || !card || get().streaming || get().summarizing) return;
       await db.chats.update(chatId, { currentLeafId: messageId, updatedAt: Date.now() });
-      set({ messages: await pathToLeaf(chatId, messageId), error: null });
+      const path = await pathToLeaf(chatId, messageId);
+      set({ messages: path, error: null });
+      const target = path[path.length - 1];
+      if (!target || target.role !== 'user') return; // 落在 AI 消息上就只是回溯，不生成
+
+      const controller = new AbortController();
+      currentAbort = controller;
+      set({ draft: '', streaming: true });
+      await runTurn({
+        chatId,
+        card,
+        parentId: target.id,
+        userText: target.raw,
+        before: path.slice(0, -1),
+        controller,
+      });
     },
 
     regenerate: async () => {
-      const { chatId, messages, streaming, card } = get();
-      if (!chatId || streaming || messages.length < 2 || !card) return;
+      const { chatId, messages, streaming, summarizing, card } = get();
+      if (!chatId || streaming || summarizing || messages.length < 2 || !card) return;
       const lastUser = [...messages].reverse().find((m) => m.role === 'user');
       if (!lastUser) return;
       const controller = new AbortController();
       currentAbort = controller;
       await db.chats.update(chatId, { currentLeafId: lastUser.id, updatedAt: Date.now() });
-      // 重新生成＝替同一則使用者訊息再掛一個 assistant 分支；
-      // 以前是「把 leaf 指回去再呼叫 send」，那會**多插一條一模一樣的使用者訊息**。
+      // 重新生成＝替同一则使用者訊息再挂一个 assistant 分支；
+      // 以前是「把 leaf 指回去再呼叫 send」，那会**多插一条一模一样的用户訊息**。
       const historyPath = await pathToLeaf(chatId, lastUser.parentId);
       set({ messages: [...historyPath, lastUser], draft: '', streaming: true, error: null });
-      const configRow = await db.configs.where('scope').equals('global').first();
-      const chat = await db.chats.get(chatId);
-      await streamReply({
+      await runTurn({
         chatId,
+        card,
         parentId: lastUser.id,
         userText: lastUser.raw,
-        historyPath,
-        card,
-        setup: chat?.promptSnapshot ?? '',
-        configRow,
+        before: historyPath,
         controller,
       });
     },

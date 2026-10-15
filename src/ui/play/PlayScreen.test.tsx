@@ -111,4 +111,48 @@ describe('游玩页', () => {
     await waitFor(() => expect(screen.getByText('已經吐出來的一段')).toBeTruthy());
     expect(useSession.getState().error).toBeNull();
   });
+
+  it('顶栏显示上下文占用（HUD），点开能看到分项明细', async () => {
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('context-hud')).toBeTruthy());
+    expect(screen.getByTestId('context-hud').textContent).toContain('上下文');
+    expect(screen.getByTestId('context-hud').textContent).toContain('tok');
+
+    fireEvent.click(screen.getByTestId('context-hud'));
+    await waitFor(() => expect(screen.getByText('上下文占用')).toBeTruthy());
+    expect(screen.getByText('系统提示词')).toBeTruthy();
+    expect(screen.getByText('合计')).toBeTruthy();
+  });
+
+  it('往上滑之后出现的是「回到顶部 / 回到底部」两个图标按钮（不是文字）', async () => {
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
+    fireEvent.change(box, { target: { value: '你好' } });
+    fireEvent.click(screen.getByText('发送'));
+    // 等真的有一则讯息落地（否则互动页还占着聊天区，找不到滚动容器）
+    await waitFor(() => expect(useSession.getState().streaming).toBe(false));
+    await waitFor(() => expect(useSession.getState().messages.length).toBeGreaterThan(0));
+
+    const el = screen.getByTestId('message-scroll');
+    Object.defineProperty(el, 'scrollHeight', { value: 2000, configurable: true });
+    Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true });
+    el.scrollTop = 0;
+    fireEvent.scroll(el);
+
+    await waitFor(() => expect(screen.getByTestId('scroll-to-top')).toBeTruthy());
+    expect(screen.getByTestId('scroll-to-bottom')).toBeTruthy();
+    // 图标按钮里没有文字（使用者要求：不要弄成文字）
+    expect(screen.getByTestId('scroll-to-bottom').textContent).toBe('');
+  });
+
+  it('对话列表用右侧图标按钮：改名与删除都不再占一行', async () => {
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    fireEvent.click(screen.getByText('对话'));
+    await waitFor(() => expect(screen.getByText('对话列表')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByLabelText(/^改名/).length).toBeGreaterThan(0));
+    expect(screen.getAllByLabelText(/^删除/).length).toBeGreaterThan(0);
+  });
 });
