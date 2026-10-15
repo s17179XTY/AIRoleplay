@@ -22,15 +22,68 @@ const base: AssembleInput = {
 };
 
 describe('装配内核', () => {
-  it('顺序：前置词 → 全局提示词 → 卡片提示词 → 设定 → 历史 → 后置词 → 用户输入', () => {
+  it('顺序：卡片前缀词 → 全局提示词 → 卡片提示词 → 设定 → 历史 → 后置词 → 用户输入', () => {
     const r = assemble(base);
     const texts = r.entries.map((e) => e.content);
     expect(texts.indexOf('前置词内容')).toBeLessThan(texts.indexOf('全局提示词'));
     expect(texts.indexOf('全局提示词')).toBeLessThan(texts.indexOf('系统提示词'));
-    expect(texts.indexOf('系统提示词')).toBeLessThan(texts.indexOf('角色简介'));
-    expect(texts.indexOf('角色简介')).toBeLessThan(texts.indexOf('第一轮'));
+    expect(texts.indexOf('系统提示词')).toBeLessThan(texts.indexOf('主人公设定'));
+    expect(texts.indexOf('主人公设定')).toBeLessThan(texts.indexOf('第一轮'));
     expect(texts.indexOf('第一轮')).toBeLessThan(texts.indexOf('全局后置词'));
     expect(texts.indexOf('全局后置词')).toBeLessThan(texts.indexOf('玩家输入'));
+  });
+
+  it('简介不再注入提示词（它只是卡片列表上的介绍）', () => {
+    const r = assemble(base);
+    expect(r.entries.some((e) => e.content === '角色简介')).toBe(false);
+  });
+
+  it('MOD 接在卡片提示词之后（system 35），且在主人公设定之前', () => {
+    const r = assemble({ ...base, mods: [{ id: 'mod1', name: '破甲', content: 'MOD内容', order: 1 }] });
+    const mod = r.entries.find((e) => e.source === 'mod');
+    expect(mod).toBeTruthy();
+    expect(mod?.content).toBe('MOD内容');
+    expect(mod?.position).toBe('system');
+    expect(mod?.priority).toBe(35);
+
+    const texts = r.entries.map((e) => e.content);
+    expect(texts.indexOf('系统提示词')).toBeLessThan(texts.indexOf('MOD内容'));
+    expect(texts.indexOf('MOD内容')).toBeLessThan(texts.indexOf('主人公设定'));
+  });
+
+  it('MOD 支持宏，空内容不注入', () => {
+    const r = assemble({
+      ...base,
+      mods: [
+        { id: 'm1', name: 'a', content: '{{char}} 的模组', order: 0 },
+        { id: 'm2', name: 'b', content: '   ', order: 1 },
+      ],
+    });
+    const mods = r.entries.filter((e) => e.source === 'mod');
+    expect(mods).toHaveLength(1);
+    expect(mods[0].content).toBe('苏小染 的模组');
+  });
+
+  it('摘要注入在历史之前，且明确标注不是最新消息', () => {
+    const r = assemble({
+      ...base,
+      summaries: [{ id: 's1', text: '[用户] 甲\n[叙事] 乙', dateLabel: '10-01 ~ 10-02', rangeLabel: '第 1–4 条' }],
+    });
+    const sum = r.entries.find((e) => e.source === 'memory');
+    expect(sum).toBeTruthy();
+    expect(sum?.position).toBe('before-history');
+    expect(sum?.priority).toBeGreaterThanOrEqual(200);
+
+    const texts = r.entries.map((e) => e.content);
+    expect(texts.indexOf(sum!.content)).toBeLessThan(texts.indexOf('第一轮'));
+    expect(sum!.content).toContain('不是最新消息');
+    expect(sum!.content).toContain('以下是最近的原文对话');
+    expect(sum!.content).toContain('10-01 ~ 10-02');
+    expect(sum!.content).toContain('第 1–4 条');
+  });
+
+  it('没有摘要时不注入空的摘要条目', () => {
+    expect(assemble(base).entries.some((e) => e.source === 'memory')).toBe(false);
   });
 
   it('宏替换生效，未定义宏原样保留', () => {

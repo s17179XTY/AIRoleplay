@@ -34,7 +34,11 @@ export function assemble(input: AssembleInput): AssembledRequest {
   push('config-prompt', 'system', applyMacros(config.prompt, input.macros), 'system', 10);
   push('config-pre', 'system', applyMacros(config.prePrompt, input.macros), 'system', 20);
   push('card-system', 'system', applyMacros(card.prompt, input.macros), 'system', 30);
-  push('card-system', 'system', applyMacros(card.description, input.macros), 'system', 40);
+  // 卡片简介**不再注入**：它只是卡片列表上的介绍，不是提示词（使用者明确要求）
+  // MOD：接在卡片提示词之后，套用后立即生效（每轮都重新组装，天然热插拔）
+  for (const m of input.mods ?? []) {
+    push('mod', 'system', applyMacros(m.content, input.macros), 'system', 35);
+  }
   push('card-system', 'system', applyMacros(card.persona, input.macros), 'system', 41);
   push('card-system', 'system', applyMacros(card.scenario, input.macros), 'system', 42);
   push('chat-setup', 'system', input.setup ?? '', 'system', 45);

@@ -34,16 +34,19 @@ export function applyRegexRules(text: string, rules: RegexRule[]): string {
   return out;
 }
 
-export function stripMemoryAndThink(raw: string): string {
-  let out = raw.replace(/<!--([\s\S]*?)-->/g, '');
-  const doc = new DOMParser().parseFromString('<div id="root">' + out + '</div>', 'text/html');
-  const root = doc.getElementById('root');
-  if (root) {
-    for (const details of Array.from(root.querySelectorAll('details'))) {
-      const summary = details.querySelector('summary')?.textContent ?? '';
-      if (summary.includes('记忆')) details.remove();
-    }
-    out = root.innerHTML;
-  }
-  return out.trim();
+/**
+ * 只剥掉模型的思考噪音（`<!-- -->` 注释）。
+ *
+ * **不再剥「记忆」区块**：以前会把历史消息里的 `<details>近期记忆/永久记忆</details>` 整个删掉，
+ * 一旦解析失败（模型格式写歪）那段摘要就再也不会进提示词 —— 信息凭空消失。
+ * 新版窗口内的原文一律保留（记忆块本身就是上下文的一部分），窗口外的内容由摘要库接管。
+ */
+export function stripThink(raw: string): string {
+  return raw.replace(/<!--([\s\S]*?)-->/g, '').trim();
 }
+
+/** @deprecated 旧名。只剥注释，不再剥记忆块；新代码请用 stripThink */
+export function stripMemoryAndThink(raw: string): string {
+  return stripThink(raw);
+}
+
