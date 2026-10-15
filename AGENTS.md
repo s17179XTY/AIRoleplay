@@ -42,10 +42,12 @@
 
 ## 3. 目录地图
 
-    src/core/assembler/   装配内核：条目模型、宏、世界书触发、token 预算、装配顺序
+    src/core/assembler/   装配内核：条目模型、宏、世界书触发、token 预算、装配顺序、
+                          window.ts（上下文窗口与成对规则）、summarize.ts（摘要压缩请求）
     src/core/render/      渲染内核：思维链/记忆/选项提取、白名单清洗、渲染管线
     src/core/providers/   适配内核：OpenAI 兼容、Anthropic、SSE 解析、mock、能力矩阵
-    src/core/storage/     存储内核：Dexie schema、卡片仓库(zip)、记忆、备份、seed
+    src/core/storage/     存储内核：Dexie schema、卡片仓库(zip)、摘要库、备份、seed、
+                          migrate.ts（旧记忆一次性清理）、modRepo.ts（MOD）、image.ts（图片校验）
     src/core/cards/       卡片规格、zip 打包、酒馆 PNG 卡互转、模板引擎、沙箱桥、正则
     src/core/sync/        同步内核：KDF/信封加解密、blob、表↔信封映射、outbox 收敛点、HTTP 客户端、同步引擎
     worker/               独立的 Cloudflare Worker（wrangler.jsonc + migrations + src + test）；服务器零知识
@@ -91,6 +93,11 @@
      记忆区块仍在讯息里、`button button` 必须为 0、往上滑不再被拉回底部 + 「回到底部」、以及 **console 零警告**。
      `Runtime.enable` 会回放这个 target 之前的 console，所以**导航之后要先清空 logs 数组**再判定。
      退出前它会印一行 JSON，`"pass": true` 才算过。
+   - 第二个探针：`node scripts/cdp-ui-check2.mjs <port> <url>`，验的是上下文 HUD（条数 + token + 分项明细）、
+     设置页的上下文模式/条数/摘要开关/MOD 分节/上下文大小滑块、聊 4 轮后**真的生成摘要**、
+     聊天页的 MOD 面板、右下角两个**只有图标**的滚动钮、对话列表的右侧图标与「对话N」命名，同样要求 console 零警告。
+     两个探针都会用同一个浏览器 profile，所以**重复跑时断言会看到上一轮留下的资料**（例如摘要条数累加）——
+     断言要写成「存在」而不是「等于某个数」。
 4. `git commit`，中文提交信息，`fix:` / `feat:` / `chore:` 前缀。
 
 ## 6. 已知坑（都踩过）
@@ -151,21 +158,46 @@
 | 记忆条数栏位「删掉就自己弹回 0，打不了字」 | `<input type="number" value={number}>` + `Number(e.target.value)`：空字串变成 `0`，受控 input 立刻被写回 0 | 状态存**字串**、`type="text"`，只在按保存时验证（`1–50` 的整数）；预设 6 条 |
 | `<button>` 里包 `<button>`（React 警告，点击也可能被吃错） | 气泡外层本来是 `<button>`，而内容里有折叠面板的展开钮与选项钮 | AI 气泡外层改 `div role="button"`；真按钮才用 `<button>`。CDP 探针会数 `button button` 必须为 0 |
 
+### 上下文窗口 / 摘要库 / MOD / 图片 这一轮补上的坑（2026-10-15 第二批）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 「窗口少一条也不肯整个出去」 | 第一版 `computeWindow` 写成了「向内扩」：把掉出去的那半条又拉回窗口，与 spec 的「向外扩」相反 | 规则是**把整个交换都推到窗口外**（使用者举的例子就是：第 n 条用户消息出去了，第 n-1 条 AI 消息也要一起出去）。有测试按这两种语义分别守 |
+| AI 把摘要当成最新资讯 | 摘要如果放在历史之后、或没有明确标注，模型会以为那是刚刚发生的事 | 摘要注入在 **before-history（紧贴历史之前）**，标题写死「以下内容发生在当前对话之前，不是最新消息」，末尾再加一行「以下是最近的原文对话」 |
+| 摘要把玩家的选择写成了 AI 自己的 | 压缩时把整段揉成一段文字 | 压缩输出**必须分「用户：」「叙事：」两段**，解析失败时整段当叙事并在 UI 标注「格式未识别」；注入时也分开 |
+| 摘要生成到一半使用者又发了一句 | 摘要要读当前上下文，中途改世界线就对不上 | 压缩期间 `summarizing = true`，`send()` 直接 return；取消则不写入、下次重试 |
+| 模型一直失败 → 那段对话凭空消失 | 失败就只是跳过 | 连续失败 3 次退化为**本地骨架摘要**（记下第 X–Y 条与用户当时的输入）。**宁可粗糙也不能丢** |
+| 旧记忆条目清不干净（换台装置又回来） | `clear()` 走 deleteRange，outbox 收敛点刻意不对它产生墓碑 | 迁移必须**逐条 `delete(id)`**；测试断言墓碑确实产生 |
+| 「两边都有资料」在每次重新登录都被问一次 | 判据只看「两边非空」——同一台装置本来两边就是同一批资料 | 加判据：**这个库有没有同步游标**。有游标＝这台装置同步过，直接拉；没有游标 + 本地非空 + 云端非空，才是真的「两个来源第一次碰面」 |
+| 选了「以本地为准」结果还是云端赢 | pull 会先把云端内容写进本地表 | 四步不能省：**拍快照 → 拉一遍拿 rev → 用快照盖回去 → 推上去** |
+| 冲突「覆盖回去」之后又冲突一次 | 只写回本地、没动 rev，下一轮 push 的 baseRev 还是对不上 | 覆盖回去时把本地 rev **对齐到那一版**（`setRev(kind, id, item.rev)`），下一次推送才会被接受 |
+| 把 HTML 改名成 `.png` 就能上传 | 只看副檔名 / 只信 `file.type` | **magic byte 白名单**（PNG/JPEG/GIF/WebP），认不出来一律拒；**SVG 单独拒绝**（可以带脚本）；再加体积与边长上限 |
+| `npm run test` 里 `URL.createObjectURL is not a function` | jsdom 没实作它，而图片预览要用 | 在 `src/test/setup.ts` 补一个假的（跟 `crypto.subtle` 一样处理） |
+| 设置页「点了一下又自己跳回旧值」 | `refresh()` 是异步的，使用者在它 resolve 之前点选就会被落地的旧值盖掉 | 加 `formTouchedRef`：**动过的栏位不再被 refresh 覆盖**，保存后再交还控制权。这是真的 UX bug，不是测试问题 |
+
 ## 7. 数据模型要点
 
 - `messages` 是**树**（`parentId` + `chats.currentLeafId`）：重新生成 = 挂第二个孩子，回溯 = 把 currentLeafId 指回历史节点。
 - `cardFiles` 是**虚拟文件系统**（`[cardId+path]` 复合主键）：card.json / ui/index.html / worldbook.json / assets/*，导出 zip 就是反向打包。
-- 记忆托管：解析 AI 输出里的记忆区块 → `memories` 表 → 满额归档成永久记忆 → 每轮按「永久 → 近期 → 历史」回注，并从历史里剥离避免重复。
-- 全局配置（记忆条数 / 前置词 / 后置词 / 提示词）在 `configs` 表 `scope='global'`。
+- **上下文窗口**：`settings` 的 `contextMode`（`recent` / `all`）与 `contextMessageLimit`（默认 6）。
+  「条」= user 与 assistant 各算一条，**不含本轮输入**。窗口边界**永不切开一个交换**（向外扩）。
+- **记忆库 = 摘要库**：`memories` 表，`tier: 'summary'`。掉出窗口的**交换**由模型压成摘要（分「用户 / 叙事」两段），
+  注入在**历史之前**并标注「不是最新消息」。20 条上限，超出时最老 5 条本地合并。
+  旧的 `recent` / `permanent` 层级只在迁移期存在（`migrate.ts` 逐条删除）。
+- **MOD**：`mods` 表（`id, enabled, order`），接在卡片提示词之后（system 35）。每轮重新组装 → 天然热插拔。
+- **图片**：卡片封面 / 头像存 `assets` 表，走既有的加密 blob 通道；导出卡片默认不含图（备份仍然带）。
+- 全局配置（前缀词 / 后缀词 / 提示词）在 `configs` 表 `scope='global'`。
 - **账号分库**：`db` 是可换的连接（`export let db` + `openDatabase/switchDatabase`）。未登录用 `dsh-roleplay`，登录账号 X 用 `dsh-roleplay@x`——两个账号的本地数据天然隔离。
-- 同步用的四张表（Dexie v2，只加表）：`syncOutbox`（待推送，`[kind+id]` 去重）、`syncState`（游标 / deviceId / 配额）、`syncRev`（每笔已同步到第几版）、`syncConflicts`（被覆盖版本的本地副本）、`blobState`（素材上传状态）。
+- 同步用的四张表（Dexie v2，只加表）：`syncOutbox`（待推送，`[kind+id]` 去重）、`syncState`（游标 / deviceId / 配额）、`syncRev`（每笔已同步到第几版）、`syncConflicts`（被覆盖版本的本地副本）、`blobState`（素材上传状态）。v3 只加 `mods`。
 - 云端的「变更日志」`changes(seq AUTOINCREMENT)` 是增量同步游标的唯一依据：**不依赖任何设备时钟**。
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**54 个测试文件 / 335 个用例全绿**，构建通过。
-关键回归测试：装配顺序、世界书触发、记忆归档与回注、正则替换、白名单清洗（含 XSS 用例）、卡片 zip 往返、酒馆卡互转、卡片自愈、草稿态不落库、布局约束。
+改之前先跑一遍确认基线：**60 个测试文件 / 394 个用例全绿**，构建通过。
+关键回归测试：装配顺序、世界书触发、正则替换、白名单清洗（含 XSS 用例）、卡片 zip 往返、酒馆卡互转、卡片自愈、草稿态不落库、布局约束。
 渲染相关的关键回归测试：**纯文字也要渲染成 `text` 区块**（不能是空气泡）、**记忆区块提取后仍留在正文里**、气泡内不得有 `<button>` 包 `<button>`（`src/core/render/pipeline.test.ts`、`src/ui/play/MessageBubble.test.tsx`）。
-会话相关的关键回归测试：**「停止」在任何时刻按下都要生效**（含「还在组提示词」的空窗时序）、**「重新生成」不得多插使用者讯息**、记忆托管开关、换库后 `reload()`（`src/state/useSession.test.ts`）。
-同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、两装置端到端一致（`src/core/sync/integration.test.ts`）。
+会话相关的关键回归测试：**「停止」在任何时刻按下都要生效**、**「重新生成」不得多插使用者讯息**、**从这里重开会自动生成**、`init()` 幂等（切页面不被截停）、换库后 `reload()`（`src/state/useSession.test.ts`）。
+上下文与摘要：**窗口不切开一个交换（向外扩）**、半对不压、**摘要按对压缩且分「用户/叙事」两段**、连续失败退化为骨架、20 条上限合并（`window.test.ts`、`summarize.test.ts`、`memoryStore.test.ts`）。
+同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、**两边都有资料时的取舍四步**、两装置端到端一致（`src/core/sync/integration.test.ts`、`src/state/useSync.test.ts`）。
+图片：**伪装的 .png 被拒、SVG 被拒、超 2 MB 被拒、导出可不含图**（`src/core/storage/image.test.ts`）。
 后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs` 对 `wrangler dev` 冒烟。删除帐号端点另有 `worker/test/account.test.ts`（含「别人的帐号不受影响」与「KV 素材一起删」）。

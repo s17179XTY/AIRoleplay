@@ -526,7 +526,8 @@ export const useSession = create<SessionState>((set, get) => {
       if (!chat) {
         const id = newId('chat_');
         chat = {
-          id, cardId, title: card.json.name, vars: {}, promptSnapshot: '',
+          // 默认名字也从「对话N」开始递增（跟 newChat 一致）
+          id, cardId, title: `对话${chats.length + 1}`, vars: {}, promptSnapshot: '',
           providerId: null, modelPresetId: null, currentLeafId: null,
           createdAt: Date.now(), updatedAt: Date.now(), archived: 0,
         };

@@ -4,6 +4,8 @@ import { useSettingFlag } from '../../state/useSetting';
 import { useData } from '../../state/useData';
 import { useNav } from '../../state/useNav';
 import { updateSummaryText } from '../../core/storage/memoryStore';
+import { listMods, setModEnabled } from '../../core/storage/modRepo';
+import type { ModRecord } from '../../core/storage/types';
 import { useBlobUrl } from '../cards/useAssetUrl';
 import { db } from '../../core/storage/db';
 import type { ChatRecord } from '../../core/storage/types';
@@ -47,9 +49,11 @@ export default function PlayScreen() {
   const showToast = useNav((s) => s.showToast);
   const [editingSummary, setEditingSummary] = useState<string | null>(null);
   const [summaryDraft, setSummaryDraft] = useState('');
+  const [mods, setMods] = useState<ModRecord[]>([]);
+  const modsOn = mods.filter((m) => m.enabled && m.content.trim()).length;
 
   const [pageOpen, setPageOpen] = useState(false);
-  const [sheet, setSheet] = useState<'chats' | 'memory' | null>(null);
+  const [sheet, setSheet] = useState<'chats' | 'memory' | 'mods' | null>(null);
   const [chats, setChats] = useState<ChatRecord[]>([]);
   const [editingChat, setEditingChat] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState('');
@@ -116,8 +120,9 @@ export default function PlayScreen() {
     setChats(list.sort((a, b) => b.updatedAt - a.updatedAt));
   }, [cardId]);
 
-  const openSheet = async (kind: 'chats' | 'memory') => {
+  const openSheet = async (kind: 'chats' | 'memory' | 'mods') => {
     if (kind === 'chats') await loadChats();
+    if (kind === 'mods') setMods(await listMods());
     setSheet(kind);
   };
 
@@ -144,6 +149,9 @@ export default function PlayScreen() {
               <button type="button" className="dsh-chip" onClick={() => setPageOpen(true)}>互动页</button>
             )}
             <button type="button" className="dsh-chip" onClick={() => void openSheet('chats')}>对话</button>
+            <button type="button" className="dsh-chip" onClick={() => void openSheet('mods')}>
+              MOD{modsOn > 0 ? ' ' + modsOn : ''}
+            </button>
             <button type="button" className="dsh-chip" onClick={() => void openSheet('memory')}>
               记忆{memories.length > 0 ? ' ' + memories.length : ''}
             </button>
@@ -259,7 +267,9 @@ export default function PlayScreen() {
         <div className="absolute inset-0 z-20 flex flex-col justify-end bg-black/35" onClick={() => setSheet(null)}>
           <div className="dsh-sheet max-h-[70%] overflow-y-auto p-4" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
-              <div className="text-[15px] font-semibold text-slate-800">{sheet === 'chats' ? '对话列表' : '记忆库'}</div>
+              <div className="text-[15px] font-semibold text-slate-800">
+                {sheet === 'chats' ? '对话列表' : sheet === 'mods' ? 'MOD（下一轮立刻生效）' : '记忆库'}
+              </div>
               <button type="button" className="dsh-chip" onClick={() => setSheet(null)}>关闭</button>
             </div>
 
@@ -338,6 +348,39 @@ export default function PlayScreen() {
                 {chats.length === 0 && (
                   <div className="py-6 text-center text-[13px] text-slate-400">还没有对话</div>
                 )}
+              </>
+            )}
+
+            {sheet === 'mods' && (
+              <>
+                <div className="mb-2 text-[11px] leading-relaxed text-slate-500">
+                  MOD 是接在系统提示词后面的一段提示词。这里改开关**下一轮回复立刻生效**，不用重开对话。
+                </div>
+                {mods.length === 0 && (
+                  <div className="py-8 text-center text-[13px] text-slate-400">
+                    还没有 MOD，到「设置 → MOD」新增一个
+                  </div>
+                )}
+                {mods.map((m) => (
+                  <div key={m.id} className="dsh-card mb-2 flex items-center justify-between gap-3 px-3.5 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] text-slate-700">{m.name}</div>
+                      <div className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-[11px] text-slate-400">{m.content}</div>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`切换 ${m.name}`}
+                      aria-pressed={m.enabled}
+                      onClick={async () => {
+                        await setModEnabled(m.id, !m.enabled);
+                        setMods(await listMods());
+                      }}
+                      className={'relative h-6 w-11 shrink-0 rounded-full transition ' + (m.enabled ? 'bg-[#0072E3]' : 'bg-black/15')}
+                    >
+                      <span className={'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ' + (m.enabled ? 'left-[22px]' : 'left-0.5')} />
+                    </button>
+                  </div>
+                ))}
               </>
             )}
 
