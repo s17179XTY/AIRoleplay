@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import type {
   AssetRecord, CardFileRecord, CardRecord, CardUiStateRecord, ChatRecord, ConfigRecord,
-  MemoryRecord, MessageRecord, ModelPresetRecord, ProviderRecord, RegexScriptRecord,
+  MemoryRecord, MessageRecord, ModelPresetRecord, ModRecord, ProviderRecord, RegexScriptRecord,
   SettingRecord, WorldbookEntryRecord, WorldbookRecord,
 } from './types';
 
@@ -57,6 +57,7 @@ export class DshDB extends Dexie {
   configs!: Table<ConfigRecord, string>;
   cardUiState!: Table<CardUiStateRecord, [string, string]>;
   settings!: Table<SettingRecord, string>;
+  mods!: Table<ModRecord, string>;
   syncOutbox!: Table<OutboxRecord, [string, string]>;
   syncState!: Table<SyncStateRecord, string>;
   syncRev!: Table<SyncRevRecord, [string, string]>;
@@ -88,6 +89,8 @@ export class DshDB extends Dexie {
       syncConflicts: '++seq, kind, id',
       blobState: 'blobId, state, refId',
     });
+    // v3：MOD（可热插拔的提示词）
+    this.version(3).stores({ mods: 'id, enabled, order' });
   }
 }
 

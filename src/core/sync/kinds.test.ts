@@ -4,9 +4,9 @@ import {
 } from './kinds';
 
 describe('kinds', () => {
-  it('14 種 kind 都有對應表，且本地專用表不在其中', () => {
+  it('15 種 kind 都有對應表（含 MOD），且本地專用表不在其中', () => {
     const tables = Object.values(SYNC_TABLES);
-    expect(tables).toHaveLength(14);
+    expect(tables).toHaveLength(15);
     for (const t of LOCAL_ONLY_TABLES) expect(tables).not.toContain(t);
   });
 
@@ -29,7 +29,7 @@ describe('kinds', () => {
       chat: { id: 'x' }, message: { id: 'x' }, memory: { id: 'x' },
       worldbook: { id: 'x' }, worldbookEntry: { id: 'x' }, regexScript: { id: 'x' },
       config: { id: 'x' }, cardUiState: { cardId: 'c', key: 'xp' }, setting: { key: 'k' },
-      provider: { id: 'x' }, modelPreset: { id: 'x' }, assetMeta: { id: 'x' },
+      provider: { id: 'x' }, modelPreset: { id: 'x' }, assetMeta: { id: 'x' }, mod: { id: 'x' },
     };
     for (const [kind, row] of Object.entries(rows)) {
       const id = keyOf(kind as SyncKind, row);

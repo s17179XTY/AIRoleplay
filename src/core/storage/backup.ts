@@ -42,6 +42,7 @@ export async function exportAll(): Promise<Uint8Array> {
     configs: await db.configs.toArray(),
     cardUiState: await db.cardUiState.toArray(),
     settings: await db.settings.toArray(),
+    mods: await db.mods.toArray(),
   };
   const assetRows = await db.assets.toArray();
   const file: BackupFile = {
@@ -70,13 +71,14 @@ export async function importAll(bytes: Uint8Array): Promise<void> {
     'rw',
     [db.cards, db.cardFiles, db.chats, db.messages, db.memories, db.worldbooks,
       db.worldbookEntries, db.regexScripts, db.providers, db.modelPresets, db.configs,
-      db.cardUiState, db.settings, db.assets],
+      db.cardUiState, db.settings, db.assets, db.mods],
     async () => {
       await Promise.all([
         db.cards.clear(), db.cardFiles.clear(), db.chats.clear(), db.messages.clear(),
         db.memories.clear(), db.worldbooks.clear(), db.worldbookEntries.clear(),
         db.regexScripts.clear(), db.providers.clear(), db.modelPresets.clear(),
         db.configs.clear(), db.cardUiState.clear(), db.settings.clear(), db.assets.clear(),
+        db.mods.clear(),
       ]);
       const t = parsed.tables;
       await db.cards.bulkPut((t.cards ?? []) as never[]);
@@ -92,6 +94,7 @@ export async function importAll(bytes: Uint8Array): Promise<void> {
       await db.configs.bulkPut((t.configs ?? []) as never[]);
       await db.cardUiState.bulkPut((t.cardUiState ?? []) as never[]);
       await db.settings.bulkPut((t.settings ?? []) as never[]);
+      await db.mods.bulkPut((t.mods ?? []) as never[]);
       await db.assets.bulkPut(
         (parsed.assets ?? []).map((a) => ({ id: a.id, mime: a.mime, size: a.size, bytes: base64ToAb(a.data) })),
       );

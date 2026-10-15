@@ -1,7 +1,7 @@
 export type SyncKind =
   | 'card' | 'cardFile' | 'chat' | 'message' | 'memory'
   | 'worldbook' | 'worldbookEntry' | 'regexScript' | 'config'
-  | 'cardUiState' | 'setting' | 'provider' | 'modelPreset' | 'assetMeta';
+  | 'cardUiState' | 'setting' | 'provider' | 'modelPreset' | 'assetMeta' | 'mod';
 
 export const SYNC_TABLES: Record<SyncKind, string> = {
   card: 'cards',
@@ -18,6 +18,7 @@ export const SYNC_TABLES: Record<SyncKind, string> = {
   provider: 'providers',
   modelPreset: 'modelPresets',
   assetMeta: 'assets',
+  mod: 'mods',
 };
 
 export const LOCAL_ONLY_TABLES = ['syncOutbox', 'syncState', 'syncConflicts', 'blobState'];
