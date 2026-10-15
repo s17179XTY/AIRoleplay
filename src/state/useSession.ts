@@ -11,6 +11,7 @@ import { getActive } from '../core/storage/providerRepo';
 import { displayRules, loadRulesForChat, promptRules } from '../core/storage/regexRepo';
 import { applyRegexRules, stripMemoryAndThink, type RegexRule } from '../core/cards/regex';
 import { deleteMemory, ingestMemories, listMemories, toSummaryItems } from '../core/storage/memoryStore';
+import { migrateMemorySchema } from '../core/storage/migrate';
 import { extractAll } from '../core/render/extract';
 import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
@@ -261,6 +262,8 @@ export const useSession = create<SessionState>((set, get) => {
 
     init: async () => {
       await db.open();
+      // 旧版的「近期/永久记忆」条目一律清掉（逐条删 → 产生墓碑 → 云端也会一起清）
+      await migrateMemorySchema();
       const cards = await listCards();
       for (const c of cards) {
         if (await loadCardPackage(c.id)) {
