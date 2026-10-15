@@ -1,6 +1,6 @@
 import { db, newId } from './db';
 import type { MemoryRecord } from './types';
-import type { MemoryItem } from '../assembler/types';
+import type { MemoryItem, SummaryItem } from '../assembler/types';
 import type { ExtractedMemory } from '../render/extract';
 
 export async function listMemories(chatId: string): Promise<MemoryRecord[]> {
@@ -8,12 +8,32 @@ export async function listMemories(chatId: string): Promise<MemoryRecord[]> {
   return all.sort((a, b) => a.order - b.order);
 }
 
+/** 摘要库的条目按 order 升序（旧的在前，注入时也是这个方向） */
+export async function listSummaries(chatId: string): Promise<MemoryRecord[]> {
+  const all = await db.memories.where('chatId').equals(chatId).toArray();
+  return all.filter((r) => r.tier === 'summary').sort((a, b) => a.order - b.order);
+}
+
+export function toSummaryItems(records: MemoryRecord[]): SummaryItem[] {
+  return records
+    .filter((r) => r.tier === 'summary')
+    .map((r) => ({
+      id: r.id,
+      text: r.text,
+      userText: r.userText,
+      assistantText: r.assistantText,
+      dateLabel: r.dateLabel,
+      rangeLabel: r.rangeLabel,
+    }));
+}
+
+/** @deprecated 旧版近期/永久记忆的映射，只在迁移期还用到 */
 export function toMemoryItems(records: MemoryRecord[]): MemoryItem[] {
   const permanent = records.filter((r) => r.tier === 'permanent');
   const recent = records.filter((r) => r.tier === 'recent').slice(-20);
   return [...permanent, ...recent].map((r) => ({
     id: r.id,
-    tier: r.tier,
+    tier: r.tier as 'recent' | 'permanent',
     text: r.text,
     dateLabel: r.dateLabel,
   }));

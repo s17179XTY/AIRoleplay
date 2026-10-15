@@ -49,16 +49,24 @@ export function assemble(input: AssembleInput): AssembledRequest {
       w.position === 'after-char' ? 100 + w.order : 50 + w.order, true);
   }
 
+  // 掉出窗口的历史压成的摘要：紧贴历史之前，并且明确标注「不是最新消息」，
+  // 否则 AI 会把摘要当成最新资讯（使用者特别交代过这一点）
+  const summaries = input.summaries ?? [];
+  if (summaries.length > 0) {
+    const body = summaries
+      .map((s) => '— ' + s.dateLabel + (s.rangeLabel ? '（' + s.rangeLabel + '）' : '') + ' —\n' + s.text)
+      .join('\n\n');
+    push(
+      'memory', 'before-history',
+      '【更早的对话摘要 · 以下内容发生在当前对话之前，不是最新消息】\n' + body +
+        '\n\n【以上是更早的摘要，以下是最近的原文对话】',
+      'system', 200,
+    );
+  }
+
   input.history.forEach((m, i) => {
     push('history', 'history', applyMacros(m.content, input.macros), m.role, i, true);
   });
-
-  const perma = input.memories.filter((m) => m.tier === 'permanent');
-  const recent = input.memories.filter((m) => m.tier === 'recent');
-  const fmt = (items: typeof perma) =>
-    items.map((m) => (m.dateLabel ? '（' + m.dateLabel + '）' : '') + m.text).join('\n');
-  if (perma.length) push('memory', 'after-history', '【永久记忆】\n' + fmt(perma), 'system', 10);
-  if (recent.length) push('memory', 'after-history', '【近期记忆】\n' + fmt(recent), 'system', 20);
 
   push('config-post', 'after-history', applyMacros(config.postPrompt, input.macros), 'system', 30);
   push('card-post', 'post', applyMacros(card.post, input.macros));

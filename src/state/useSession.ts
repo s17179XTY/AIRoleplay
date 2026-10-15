@@ -10,7 +10,7 @@ import { findText } from '../core/cards/package';
 import { getActive } from '../core/storage/providerRepo';
 import { displayRules, loadRulesForChat, promptRules } from '../core/storage/regexRepo';
 import { applyRegexRules, stripMemoryAndThink, type RegexRule } from '../core/cards/regex';
-import { deleteMemory, ingestMemories, listMemories, toMemoryItems } from '../core/storage/memoryStore';
+import { deleteMemory, ingestMemories, listMemories, toSummaryItems } from '../core/storage/memoryStore';
 import { extractAll } from '../core/render/extract';
 import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
@@ -145,7 +145,7 @@ export const useSession = create<SessionState>((set, get) => {
         postPrompt: configRow?.postPrompt ?? '',
       },
       worldbook: worldbookOf(card),
-      memories: toMemoryItems(memoryRecords),
+      summaries: toSummaryItems(memoryRecords),
       history: historyItems,
       userInput: userText,
       setup,

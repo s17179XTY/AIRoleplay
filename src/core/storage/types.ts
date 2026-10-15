@@ -1,6 +1,10 @@
 export type CardSource = 'local' | 'imported-st' | 'imported-fy';
 export type MessageStatus = 'complete' | 'streaming' | 'incomplete' | 'error';
-export type MemoryTier = 'recent' | 'permanent';
+/** 'summary' 是新的记忆库（摘要库）唯一会写入的层级；另两个只用于识别迁移前的旧数据 */
+export type MemoryTier = 'summary' | 'recent' | 'permanent';
+/** 这一条摘要怎么来的：模型压缩 / 老条目本地合并 / 连续失败后的本地骨架 */
+export type MemoryOrigin = 'model' | 'merged' | 'local-skeleton';
+export type ContextMode = 'recent' | 'all';
 export type RegexScope = 'global' | 'chat';
 export type RegexTarget = 'display' | 'prompt';
 export type ConfigScope = 'global' | 'card' | 'chat';
@@ -8,7 +12,10 @@ export type WbPosition = 'before-char' | 'after-char';
 
 export interface CardRecord {
   id: string; name: string; author: string; version: string; description: string;
-  tags: string[]; coverAssetId?: string; source: CardSource; spec: string;
+  tags: string[]; coverAssetId?: string;
+  /** 聊天时气泡左边显示的头像（非索引栏位） */
+  avatarAssetId?: string;
+  source: CardSource; spec: string;
   createdAt: number; updatedAt: number;
 }
 export type CardFileKind = 'json' | 'html' | 'css' | 'template' | 'worldbook' | 'regex' | 'asset';
@@ -27,6 +34,24 @@ export interface MessageRecord {
 export interface MemoryRecord {
   id: string; chatId: string; tier: MemoryTier; text: string; dateLabel: string;
   sourceMessageId: string | null; archivedAt: number | null; order: number;
+  // ↓ 摘要库新增，全部是非索引栏位（Dexie 不用升版）
+  /** 「用户」那一部分的压缩结果 */
+  userText?: string;
+  /** 「叙事（AI）」那一部分的压缩结果 */
+  assistantText?: string;
+  fromMessageId?: string;
+  toMessageId?: string;
+  messageCount?: number;
+  /** 显示用，例如「第 3–8 条」 */
+  rangeLabel?: string;
+  origin?: MemoryOrigin;
+  tokenCount?: number;
+  createdAt?: number;
+}
+
+export interface ModRecord {
+  id: string; name: string; content: string; enabled: boolean; order: number;
+  createdAt: number; updatedAt: number;
 }
 export interface WorldbookRecord { id: string; name: string; description: string; }
 export interface WorldbookEntryRecord {
@@ -62,6 +87,36 @@ export interface ConfigRecord {
 export const DEFAULT_MEMORY_LIMIT = 6;
 export interface CardUiStateRecord { cardId: string; key: string; value: string; }
 export interface SettingRecord { key: string; value: string; }
+
+/* ------------------------------------------------------------------ *
+ * 上下文窗口与摘要库的设置键与预设值（spec §1.1）
+ * 全部存在 `settings` 表（字串值），会随账号同步。
+ * ------------------------------------------------------------------ */
+
+/** 'recent' = 只带最近 N 条消息；'all' = 全部带（靠上下文大小裁剪） */
+export const SETTING_CONTEXT_MODE = 'contextMode';
+/** 只在 'recent' 模式下生效；「条」= user 与 assistant 各算一条，且不含本轮输入 */
+export const SETTING_CONTEXT_LIMIT = 'contextMessageLimit';
+/** 「记忆托管」开关的新语义：要不要自动生成摘要 */
+export const SETTING_SUMMARY_ENABLED = 'summaryEnabled';
+/** 攒够几对掉出窗口才压缩（默认 1） */
+export const SETTING_SUMMARY_BATCH = 'summaryBatchPairs';
+/** 迁移标记：旧记忆条目只清一次 */
+export const SETTING_MEMORY_SCHEMA = 'memorySchema';
+
+export const DEFAULT_CONTEXT_MODE: ContextMode = 'recent';
+export const DEFAULT_CONTEXT_LIMIT = 6;
+export const DEFAULT_SUMMARY_BATCH = 1;
+export const MEMORY_SCHEMA_VERSION = 'summary-v1';
+
+/** 每段摘要的字数上限 */
+export const SUMMARY_MAX_CHARS = 200;
+/** 摘要库最多留几条 */
+export const SUMMARY_KEEP = 20;
+/** 超出上限时，把最老的几条本地拼接成一条 */
+export const SUMMARY_MERGE_BATCH = 5;
+/** 压缩连续失败几次后退化成本地骨架摘要（宁可粗糙也不能丢） */
+export const SUMMARY_FAIL_LIMIT = 3;
 
 export const DEFAULT_PARAMS: ModelParams = {
   temperature: 1, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0,

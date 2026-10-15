@@ -11,7 +11,7 @@ const base: AssembleInput = {
   },
   config: { prompt: '全局提示词', prePrompt: '全局前置词', postPrompt: '全局后置词' },
   worldbook: [],
-  memories: [],
+  summaries: [],
   history: [
     { id: 'h1', role: 'assistant', content: '第一轮' },
     { id: 'h2', role: 'user', content: '第二轮' },

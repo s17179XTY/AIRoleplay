@@ -46,7 +46,7 @@ describe('内置卡', () => {
       },
       config: c.config,
       worldbook: c.worldbook,
-      memories: [],
+      summaries: [],
       history: [],
       userInput: init,
       macros: { user: '我', char: c.record.name, persona: '', date: '2026-10-13', time: '18:00', weekday: '周二' },

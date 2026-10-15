@@ -73,7 +73,7 @@ describe('会话 store', () => {
     expect(useSession.getState().messages).toHaveLength(4);
   });
 
-  it('AI 输出里的记忆被托管，并在下一轮注入提示词', async () => {
+  it('AI 输出里的记忆被托管；但不再当成独立条目注入（改由摘要库接管）', async () => {
     const seen: string[][] = [];
     setAdapter({
       id: 'mock',
@@ -93,13 +93,12 @@ describe('会话 store', () => {
     const stored = await db.memories.toArray();
     expect(stored).toHaveLength(1);
     expect(stored[0].text).toContain('拆穿了偷窥者');
+
     await useSession.getState().send('第二句');
     const secondCall = seen[seen.length - 1].join('\n');
-    expect(secondCall).toContain('【近期记忆】');
-    expect(secondCall).toContain('拆穿了偷窥者');
-    // 历史里的记忆区块被剥离：记忆正文只出现在回注条目里，不会重复
-    const dup = seen[seen.length - 1].filter((c) => c.includes('拆穿了偷窥者')).length;
-    expect(dup).toBe(1);
+    // 新设计：窗口内的原文保留记忆块，但**不再**把它归成【近期记忆】独立注入
+    expect(secondCall).not.toContain('【近期记忆】');
+    expect(secondCall).not.toContain('【永久记忆】');
   });
 
   it('删除消息会连同其后的分支一起删除', async () => {
