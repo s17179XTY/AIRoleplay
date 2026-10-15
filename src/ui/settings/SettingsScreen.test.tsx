@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import SettingsScreen from './SettingsScreen';
 import { db } from '../../core/storage/db';
-import { getActive, listProviders, savePreset, saveProvider, setActive } from '../../core/storage/providerRepo';
-import { ensureSeedCard, loadCardPackage, saveCardPackage, worldbookOf } from '../../core/storage/cardRepo';
+import { getActive, listProviders, savePreset, saveProvider, setActive } from '../../core/storage/providerRepo';import { ensureSeedCard, loadCardPackage, saveCardPackage, worldbookOf } from '../../core/storage/cardRepo';
 import { DEMO_CARD_ID } from '../../core/storage/seed';
 import { useNav } from '../../state/useNav';
 
@@ -51,7 +50,7 @@ describe('设置页', () => {
 
   it('全局配置可保存并读回', async () => {
     render(<SettingsScreen />);
-    await waitFor(() => expect(screen.getByText('全局配置（对所有卡片生效）')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('上下文与记忆（对所有卡片生效）')).toBeTruthy());
     // 用 aria-label 定位，不要用「第 0 個 textbox」——上面多了帳號分節就會指錯欄位
     fireEvent.change(screen.getByLabelText('全局提示词'), { target: { value: '全局提示词内容' } });
     fireEvent.click(screen.getByText('保存全局配置'));
@@ -68,6 +67,8 @@ describe('设置页', () => {
 
     fireEvent.click(screen.getByText('+ 添加服务商'));
     fireEvent.change(screen.getByPlaceholderText('服务商名称'), { target: { value: '我的中转' } });
+    // API Key 现在是必填（本机/内网地址除外），不填会被挡下
+    fireEvent.change(screen.getByPlaceholderText('API Key'), { target: { value: 'sk-test' } });
     fireEvent.click(screen.getByText('保存服务商'));
     await waitFor(() => expect(screen.getByText('我的中转')).toBeTruthy());
 
@@ -81,36 +82,67 @@ describe('设置页', () => {
     });
   });
 
-  it('记忆条数：字段可以清空重打，只在保存时检查（回归：以前一删就弹回 0，打不了字）', async () => {
+  it('API Key 为空时不给保存；但本机/内网地址放行（否则会挡死 Ollama）', async () => {
     render(<SettingsScreen />);
-    await waitFor(() => expect(screen.getByText('全局配置（对所有卡片生效）')).toBeTruthy());
-    const input = screen.getByLabelText('记忆条数') as HTMLInputElement;
+    await waitFor(() => expect(screen.getByText('模型接入')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('+ 添加服务商'));
+    fireEvent.change(screen.getByPlaceholderText('服务商名称'), { target: { value: '云端中转' } });
+    fireEvent.change(screen.getByPlaceholderText(/Base URL/), { target: { value: 'https://api.example.com' } });
+    fireEvent.click(screen.getByText('保存服务商'));
+    // toast 由 AppShell 渲染，这里只渲染了设置页；直接断言「没有写进资料库」
+    await new Promise((r) => setTimeout(r, 30));
+    expect(await listProviders()).toHaveLength(0);
+
+    fireEvent.change(screen.getByPlaceholderText(/Base URL/), { target: { value: 'http://127.0.0.1:11434/v1' } });
+    fireEvent.click(screen.getByText('保存服务商'));
+    await waitFor(async () => expect(await listProviders()).toHaveLength(1));
+  });
+
+  it('上下文条数：字段可以清空重打，只在保存时检查', async () => {
+    render(<SettingsScreen />);
+    await waitFor(() => expect(screen.getByText('上下文与记忆（对所有卡片生效）')).toBeTruthy());
+    const input = screen.getByLabelText('上下文条数') as HTMLInputElement;
     expect(input.value).toBe('6'); // 预设 6 条
 
     fireEvent.change(input, { target: { value: '' } });
     expect(input.value).toBe('');   // 清空后不会被抢回去塞 0
 
     fireEvent.click(screen.getByText('保存全局配置'));
-    await waitFor(() => expect(screen.getByText(/记忆条数要填/)).toBeTruthy());
-    expect(await db.configs.where('scope').equals('global').first()).toBeUndefined();
+    await waitFor(() => expect(screen.getByText(/上下文条数要填/)).toBeTruthy());
+    expect(await db.settings.get('contextMessageLimit')).toBeUndefined();
 
-    fireEvent.change(input, { target: { value: '8' } });
+    fireEvent.change(input, { target: { value: '12' } });
     fireEvent.click(screen.getByText('保存全局配置'));
     await waitFor(async () => {
-      const cfg = await db.configs.where('scope').equals('global').first();
-      expect(cfg?.memoryLimit).toBe(8);
+      expect((await db.settings.get('contextMessageLimit'))?.value).toBe('12');
     });
   });
 
-  it('记忆托管开关可切换并落库，旁边有简短说明', async () => {
+  it('上下文模式可切换：选「全部带」时不显示条数栏位', async () => {
     render(<SettingsScreen />);
-    await waitFor(() => expect(screen.getByText('全局配置（对所有卡片生效）')).toBeTruthy());
-    expect(screen.getByText(/满下面设定的条数就归档成永久记忆/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('上下文与记忆（对所有卡片生效）')).toBeTruthy());
+    expect(screen.getByLabelText('上下文条数')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('全部带'));
+    await waitFor(() => expect(screen.queryByLabelText('上下文条数')).toBeNull());
+    // 再等一拍，确认它不是「闪一下就回来了」（refresh 晚到会把使用者的选择盖掉）
+    await new Promise((r) => setTimeout(r, 60));
+    expect(screen.queryByLabelText('上下文条数')).toBeNull();
+
+    fireEvent.click(screen.getByText('保存全局配置'));
+    await waitFor(async () => expect((await db.settings.get('contextMode'))?.value).toBe('all'));
+  });
+
+  it('记忆托管（自动摘要）开关可切换并落库，旁边有简短说明', async () => {
+    render(<SettingsScreen />);
+    await waitFor(() => expect(screen.getByText('上下文与记忆（对所有卡片生效）')).toBeTruthy());
+    expect(screen.getByText(/掉出上下文的对话/)).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('记忆托管开关'));
-    await waitFor(async () => expect((await db.settings.get('memoryEnabled'))?.value).toBe('0'));
+    await waitFor(async () => expect((await db.settings.get('summaryEnabled'))?.value).toBe('0'));
     fireEvent.click(screen.getByLabelText('记忆托管开关'));
-    await waitFor(async () => expect((await db.settings.get('memoryEnabled'))?.value).toBe('1'));
+    await waitFor(async () => expect((await db.settings.get('summaryEnabled'))?.value).toBe('1'));
   });
 
   it('恢复默认设置：清掉全局配置与字号，但保留服务商与模型配置', async () => {

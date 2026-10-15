@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { db } from '../../core/storage/db';
 import type { ModelCapability, ModelParams, ModelPresetRecord, ProviderRecord, RegexScriptRecord } from '../../core/storage/types';
-import { DEFAULT_CAPABILITY, DEFAULT_MEMORY_LIMIT, DEFAULT_PARAMS } from '../../core/storage/types';
+import { DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_PARAMS, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE, type ContextMode } from '../../core/storage/types';
 import {
   deletePreset, deleteProvider, getActive, listPresets, listProviders,
   savePreset, saveProvider, setActive, testConnection,
@@ -16,13 +16,18 @@ import { useData } from '../../state/useData';
 import { useSession } from '../../state/useSession';
 import { useNav } from '../../state/useNav';
 import AccountSection from './AccountSection';
+import ModSection from './ModSection';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
 
-/** 記憶條數的合法範圍。填錯只在「保存」時擋，不要在使用者打字當下把值搶走。 */
-const MEMORY_LIMIT_MIN = 1;
-const MEMORY_LIMIT_MAX = 50;
-const DEFAULT_MEMORY_LIMIT_TEXT = String(DEFAULT_MEMORY_LIMIT);
+/** 上下文条数的合法范围。填错只在「保存」时挡，不要在使用者打字当下把值抢走。 */
+const CONTEXT_LIMIT_MIN = 1;
+const CONTEXT_LIMIT_MAX = 100;
+const DEFAULT_CONTEXT_LIMIT_TEXT = String(DEFAULT_CONTEXT_LIMIT);
+
+/** 本机 / 内网地址：这些服务商（Ollama、LM Studio、局域网中转）本来就不需要 API Key */
+const LOCAL_BASE_URL_RE =
+  /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?::\d+)?(\/|$)/i;
 
 interface ProviderForm {
   id?: string;
@@ -45,17 +50,28 @@ export default function SettingsScreen() {
   const [form, setForm] = useState<ProviderForm | null>(null);
   const [testMsg, setTestMsg] = useState<string | null>(null);
   const [presetOpen, setPresetOpen] = useState(false);
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [presetProvider, setPresetProvider] = useState('');
   const [presetModel, setPresetModel] = useState('');
   const [params, setParams] = useState<ModelParams>({ ...DEFAULT_PARAMS });
   const [capabilities, setCapabilities] = useState<ModelCapability>({ ...DEFAULT_CAPABILITY });
   /**
-   * 記憶條數刻意用**字串**存：用 number 的話，使用者把欄位清空會變成 `Number('') = 0`，
+   * 上下文条数刻意用**字串**存：用 number 的話，使用者把欄位清空會變成 `Number('') = 0`，
    * 受控 input 立刻被塞回一個 0，變成「打都打不了字」。改成存字串、按保存時才驗證。
    */
-  const [globalConfig, setGlobalConfig] = useState({ memoryLimit: DEFAULT_MEMORY_LIMIT_TEXT, prePrompt: '', postPrompt: '', prompt: '' });
-  const [memoryLimitError, setMemoryLimitError] = useState<string | null>(null);
-  const [memoryOn, setMemoryOn] = useSettingFlag('memoryEnabled', true);
+  const [globalConfig, setGlobalConfig] = useState({
+    contextLimit: DEFAULT_CONTEXT_LIMIT_TEXT, prePrompt: '', postPrompt: '', prompt: '',
+  });
+  const [contextMode, setContextMode] = useState<ContextMode>('recent');
+  const [contextLimitError, setContextLimitError] = useState<string | null>(null);
+  /**
+   * 使用者在這一頁動過的欄位，refresh() 不可以再拿資料庫的值蓋回去。
+   * 為什麼需要：refresh() 是异步的（要读 4~5 张表），使用者可能在它 resolve 之前
+   * 就点了「全部带」——那一下会被随后落地的 refresh() 悄悄改回旧值。
+   */
+  const formTouchedRef = useRef(false);
+  const [summaryOn, setSummaryOn] = useSettingFlag('summaryEnabled', true);
+  const [summaryBatch, setSummaryBatch] = useState('1');
   const showToast = useNav((s) => s.showToast);
   const reloadCard = useSession((s) => s.reloadCard);
   const reloadSession = useSession((s) => s.reload);
@@ -73,13 +89,22 @@ export default function SettingsScreen() {
     setActiveProviderId(active?.provider.id ?? null);
     setActivePresetId(active?.preset.id ?? null);
     const cfg = await db.configs.where('scope').equals('global').first();
-    setGlobalConfig({
-      // 沒有設定列時顯示預設值，而不是 0——那個 0 就是使用者抱怨「刪掉又自己彈回來」的元凶
-      memoryLimit: String(cfg?.memoryLimit ?? DEFAULT_MEMORY_LIMIT_TEXT),
-      prePrompt: cfg?.prePrompt ?? '',
-      postPrompt: cfg?.postPrompt ?? '',
-      prompt: cfg?.prompt ?? '',
-    });
+    const [modeRow, limitRow, batchRow] = await Promise.all([
+      db.settings.get(SETTING_CONTEXT_MODE).catch(() => undefined),
+      db.settings.get(SETTING_CONTEXT_LIMIT).catch(() => undefined),
+      db.settings.get('summaryBatchPairs').catch(() => undefined),
+    ]);
+    if (!formTouchedRef.current) {
+      setContextMode(modeRow?.value === 'all' ? 'all' : 'recent');
+      setSummaryBatch(String(batchRow?.value ?? '1'));
+      setGlobalConfig({
+        // 沒有設定列時顯示預設值，而不是 0——那個 0 就是使用者抱怨「刪掉又自己彈回來」的元凶
+        contextLimit: String(limitRow?.value ?? DEFAULT_CONTEXT_LIMIT_TEXT),
+        prePrompt: cfg?.prePrompt ?? '',
+        postPrompt: cfg?.postPrompt ?? '',
+        prompt: cfg?.prompt ?? '',
+      });
+    }
     const rules = await db.regexScripts.where('scope').equals('global').toArray();
     setGlobalRules(rules.sort((a, b) => a.order - b.order));
     setChatsCount(await db.chats.count());
@@ -103,6 +128,11 @@ export default function SettingsScreen() {
       showToast('额外请求头必须是合法 JSON');
       return;
     }
+    // API Key 必填；但本机/内网服务商（Ollama、LM Studio、局域网中转）本来就不需要密钥，放行
+    if (!form.apiKey.trim() && !LOCAL_BASE_URL_RE.test(form.baseUrl.trim())) {
+      showToast('API Key 不能为空（本机/内网地址可留空）');
+      return;
+    }
     await saveProvider({
       id: form.id, label: form.label || '未命名服务商', protocol: form.protocol,
       baseUrl: form.baseUrl, apiKey: form.apiKey, extraHeaders,
@@ -116,8 +146,8 @@ export default function SettingsScreen() {
   const onTest = async (provider: ProviderRecord) => {
     setTestMsg('测试中…');
     try {
-      const models = await testConnection(provider);
-      setTestMsg(models.length > 0 ? '连接成功，可用模型 ' + models.length + ' 个：' + models.slice(0, 3).join(', ') : '连接成功，但没有返回模型列表');
+      await testConnection(provider);
+      setTestMsg('连接成功');
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       setTestMsg('连接失败：' + raw + '（若为 Failed to fetch，多为该站不允许浏览器直连 CORS）');
@@ -126,26 +156,33 @@ export default function SettingsScreen() {
 
   const onSaveGlobal = async () => {
     // 只在保存時驗證：欄位是空的（或不是整數、超出範圍）就不給存，並指出問題
-    const raw = globalConfig.memoryLimit.trim();
+    const raw = globalConfig.contextLimit.trim();
     const limit = Number(raw);
-    if (!raw || !Number.isInteger(limit) || limit < MEMORY_LIMIT_MIN || limit > MEMORY_LIMIT_MAX) {
-      setMemoryLimitError(`记忆条数要填 ${MEMORY_LIMIT_MIN}–${MEMORY_LIMIT_MAX} 之间的整数`);
-      showToast('记忆条数不合法，没有保存');
+    if (contextMode === 'recent' && (!raw || !Number.isInteger(limit) || limit < CONTEXT_LIMIT_MIN || limit > CONTEXT_LIMIT_MAX)) {
+      setContextLimitError(`上下文条数要填 ${CONTEXT_LIMIT_MIN}–${CONTEXT_LIMIT_MAX} 之间的整数`);
+      showToast('上下文条数不合法，没有保存');
       return;
     }
-    setMemoryLimitError(null);
+    setContextLimitError(null);
+    const batchNum = Number(summaryBatch.trim());
+    const batch = Number.isInteger(batchNum) && batchNum >= 1 && batchNum <= 5 ? batchNum : 1;
+    await db.settings.put({ key: SETTING_CONTEXT_MODE, value: contextMode });
+    await db.settings.put({ key: SETTING_CONTEXT_LIMIT, value: String(Number.isFinite(limit) && limit >= 1 ? limit : DEFAULT_CONTEXT_LIMIT) });
+    await db.settings.put({ key: 'summaryBatchPairs', value: String(batch) });
+    setSummaryBatch(String(batch));
     const existing = await db.configs.where('scope').equals('global').first();
     await db.configs.put({
       id: existing?.id ?? 'global-config',
       scope: 'global',
       refId: null,
-      memoryLimit: limit,
+      memoryLimit: existing?.memoryLimit ?? 6,
       prePrompt: globalConfig.prePrompt,
       postPrompt: globalConfig.postPrompt,
       prompt: globalConfig.prompt,
     });
-    setGlobalConfig((prev) => ({ ...prev, memoryLimit: String(limit) }));
     showToast('全局配置已保存');
+    // 存完了：之後的 refresh() 可以再拿資料庫的值（例如同步拉進別台裝置的設定）
+    formTouchedRef.current = false;
   };
 
   const addGlobalRule = async () => {
@@ -193,15 +230,34 @@ export default function SettingsScreen() {
       showToast('请选择服务商并填写模型名');
       return;
     }
-    const presetId = await savePreset({ providerId: presetProvider, model: presetModel.trim(), params, capabilities });
+    const presetId = await savePreset({
+      id: editingPresetId ?? undefined,
+      providerId: presetProvider,
+      model: presetModel.trim(),
+      params,
+      capabilities,
+    });
     setPresetOpen(false);
     setPresetModel('');
+    const wasEditing = Boolean(editingPresetId);
+    setEditingPresetId(null);
     // 還沒有任何「使用中」的模型（等於正在用 mock）→ 保存後直接切過去，不必再手動點一次
-    const autoSwitched = (await getActive()) === null;
+    const autoSwitched = !wasEditing && (await getActive()) === null;
     if (autoSwitched) await setActive(presetProvider, presetId);
     await refresh();
     await refreshModelLabel();
-    showToast(autoSwitched ? '模型配置已保存，并已从 mock 切换到它' : '模型配置已保存');
+    if (wasEditing) showToast('模型配置已更新');
+    else showToast(autoSwitched ? '模型配置已保存，并已从 mock 切换到它' : '模型配置已保存');
+  };
+
+  /** 编辑已有模型配置：把型号、参数与能力勾选载回表单 */
+  const openPresetEditor = (preset: ModelPresetRecord) => {
+    setEditingPresetId(preset.id);
+    setPresetProvider(preset.providerId);
+    setPresetModel(preset.model);
+    setParams({ ...DEFAULT_PARAMS, ...preset.params });
+    setCapabilities({ ...defaultCapabilityFor('openai'), ...preset.capabilities });
+    setPresetOpen(true);
   };
 
   /** 恢復預設設定：保留服務商與模型配置，其餘設定回到出廠值 */
@@ -241,6 +297,7 @@ export default function SettingsScreen() {
   };
 
   const supportedFields: { key: keyof ModelParams; label: string; supported: boolean; step: number; min: number; max: number }[] = [
+    { key: 'contextLength', label: '上下文大小（模型能吃多少 token）', supported: true, step: 4096, min: 4096, max: 2000000 },
     { key: 'temperature', label: '温度', supported: capabilities.temperature, step: 0.05, min: 0, max: 2 },
     { key: 'topP', label: 'top_p', supported: capabilities.topP, step: 0.05, min: 0, max: 1 },
     { key: 'presencePenalty', label: '存在惩罚', supported: capabilities.presencePenalty, step: 0.1, min: -2, max: 2 },
@@ -258,6 +315,8 @@ export default function SettingsScreen() {
 
       <main className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         <AccountSection />
+
+        <ModSection />
 
         <section>
           <div className="mb-2 flex items-center justify-between">
@@ -344,6 +403,8 @@ export default function SettingsScreen() {
                 <div className="flex shrink-0 gap-2 text-[12px]">
                   <button type="button" className="text-[#0072E3]"
                     onClick={() => void setActive(m.providerId, m.id).then(refresh)}>设为当前</button>
+                  <button type="button" className="text-slate-500"
+                    onClick={() => openPresetEditor(m)}>编辑</button>
                   <button type="button" className="text-red-500"
                     onClick={() => void deletePreset(m.id).then(refresh)}>删除</button>
                 </div>
@@ -405,53 +466,90 @@ export default function SettingsScreen() {
         </section>
 
         <section>
-          <h2 className="mb-2 text-[13px] font-semibold text-slate-600">全局配置（对所有卡片生效）</h2>
+          <h2 className="mb-2 text-[13px] font-semibold text-slate-600">上下文与记忆（对所有卡片生效）</h2>
           <div className="space-y-2 rounded-2xl border border-black/10 bg-white p-3">
+            <div>
+              <div className="mb-1.5 text-[12px] text-slate-500">上下文模式</div>
+              <div className="flex gap-2">
+                {([['recent', '只带最近 N 条'], ['all', '全部带']] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => { formTouchedRef.current = true; setContextMode(value); }}
+                    className={(contextMode === value ? 'dsh-chip dsh-chip-active' : 'dsh-chip') + ' flex-1 justify-center py-2'}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+                「只带最近 N 条」省钱，但更早的内容要靠下面的摘要记住；
+                「全部带」记得最全，但每一轮都要把整段对话送出去，越聊越贵。
+              </div>
+            </div>
+            {contextMode === 'recent' && (
+              <label className="block">
+                <div className="mb-1 text-[12px] text-slate-500">最近 N 条消息</div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  aria-label="上下文条数"
+                  className={inputClass}
+                  value={globalConfig.contextLimit}
+                  placeholder={DEFAULT_CONTEXT_LIMIT_TEXT}
+                  onChange={(e) => {
+                    // 直接存使用者打的字，不要在這裡 Number()——那會把空字串變成 0 而打不了字
+                    formTouchedRef.current = true;
+                    setGlobalConfig({ ...globalConfig, contextLimit: e.target.value });
+                    setContextLimitError(null);
+                  }}
+                />
+                <div className={'mt-1 text-[11px] ' + (contextLimitError ? 'text-red-500' : 'text-slate-400')}>
+                  {contextLimitError ?? `默认 ${DEFAULT_CONTEXT_LIMIT_TEXT} 条（用户与 AI 各算一条，不含本轮输入）`}
+                </div>
+              </label>
+            )}
             <div className="rounded-xl bg-black/[0.03] px-3 py-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-[12px] font-medium text-slate-600">记忆库（记忆托管）</span>
+                <span className="text-[12px] font-medium text-slate-600">记忆库（自动摘要）</span>
                 <button
                   type="button"
                   aria-label="记忆托管开关"
-                  aria-pressed={memoryOn}
-                  onClick={() => setMemoryOn(!memoryOn)}
-                  className={'relative h-6 w-11 shrink-0 rounded-full transition ' + (memoryOn ? 'bg-[#0072E3]' : 'bg-black/15')}
+                  aria-pressed={summaryOn}
+                  onClick={() => setSummaryOn(!summaryOn)}
+                  className={'relative h-6 w-11 shrink-0 rounded-full transition ' + (summaryOn ? 'bg-[#0072E3]' : 'bg-black/15')}
                 >
-                  <span className={'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ' + (memoryOn ? 'left-[22px]' : 'left-0.5')} />
+                  <span className={'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ' + (summaryOn ? 'left-[22px]' : 'left-0.5')} />
                 </button>
               </div>
               <div className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
-                开启后：AI 回复里的「近期记忆 / 永久记忆」区块会被自动收集成条目，
-                满下面设定的条数就归档成永久记忆，并在下一轮提示词里回注，让 AI 记住之前发生过什么。
-                关掉后：记忆区块只当普通文字显示，不再解析、不再归档、也不再回注（已有的条目会留着）。
+                开启后：掉出上下文的对话**按对**（一条你的输入 + 一条 AI 回复）交给模型压成摘要，
+                存进记忆库，并在下一轮提示词里以「更早的对话摘要」回注 —— 让 AI 记得窗口外面发生过什么。
+                摘要分「用户 / 叙事」两段，AI 不会把你的选择当成自己写的。
+                关掉后：窗口外的内容不再记录（长对话会失忆）。
               </div>
+              {summaryOn && (
+                <label className="mt-2 block">
+                  <div className="mb-1 text-[11px] text-slate-500">攒够几对再压缩（1 = 一掉出就压，调大更省钱）</div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    aria-label="攒够几对再压缩"
+                    className={inputClass}
+                    value={summaryBatch}
+                    placeholder="1"
+                    onChange={(e) => setSummaryBatch(e.target.value)}
+                  />
+                </label>
+              )}
             </div>
             <label className="block">
-              <div className="mb-1 text-[12px] text-slate-500">近期记忆保留条数</div>
-              <input
-                type="text"
-                inputMode="numeric"
-                aria-label="记忆条数"
-                className={inputClass}
-                value={globalConfig.memoryLimit}
-                placeholder={DEFAULT_MEMORY_LIMIT_TEXT}
-                onChange={(e) => {
-                  // 直接存使用者打的字，不要在這裡 Number()——那會把空字串變成 0 而打不了字
-                  setGlobalConfig({ ...globalConfig, memoryLimit: e.target.value });
-                  setMemoryLimitError(null);
-                }}
-              />
-              <div className={'mt-1 text-[11px] ' + (memoryLimitError ? 'text-red-500' : 'text-slate-400')}>
-                {memoryLimitError ?? `默认 ${DEFAULT_MEMORY_LIMIT_TEXT} 条；填 ${MEMORY_LIMIT_MIN}–${MEMORY_LIMIT_MAX} 的整数，保存时才检查`}
-              </div>
-            </label>
-            <label className="block">
-              <div className="mb-1 text-[12px] text-slate-500">提示词</div>
+              <div className="mb-1 text-[12px] text-slate-500">全局提示词</div>
               <textarea aria-label="全局提示词" className={inputClass} rows={4} value={globalConfig.prompt}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, prompt: e.target.value })} />
             </label>
             <label className="block">
-              <div className="mb-1 text-[12px] text-slate-500">前置词</div>
+              <div className="mb-1 text-[12px] text-slate-500">全局前缀词（排在全局提示词之后）</div>
               <textarea aria-label="全局前置词" className={inputClass} rows={3} value={globalConfig.prePrompt}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, prePrompt: e.target.value })} />
             </label>
