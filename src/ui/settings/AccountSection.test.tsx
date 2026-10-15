@@ -140,16 +140,20 @@ describe('AccountSection', () => {
     expect(useSync.getState().devices).toHaveLength(1);
   });
 
-  it('冲突提示：有冲突时显示数量，点「知道了」清空', async () => {
+  it('冲突面板：显示数量，可以展开查看，也能全部丢弃', async () => {
     await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server });
     await db.syncConflicts.add({ kind: 'setting', id: 'k', rev: 1, updatedAt: 1, ciphertext: 'x', detectedAt: 1 });
     useSync.setState({ conflicts: 1 });
 
     renderSection();
-    await waitFor(() => expect(screen.getByText(/1 笔冲突已保留本地副本/)).toBeTruthy());
-    fireEvent.click(screen.getByText('知道了'));
-    await waitFor(() => expect(screen.queryByText(/笔冲突已保留本地副本/)).toBeNull());
-    expect(await db.syncConflicts.count()).toBe(0);
+    await waitFor(() => expect(screen.getByText(/1 笔冲突/)).toBeTruthy());
+    fireEvent.click(screen.getByText('查看'));
+    // 密文是假的，解不开也要能显示出来（面板自己会说「解不开这一版」）
+    await waitFor(() => expect(screen.getByText(/settings · k · rev 1/)).toBeTruthy());
+
+    fireEvent.click(screen.getByText('全部丢弃'));
+    await waitFor(async () => expect(await db.syncConflicts.count()).toBe(0));
+    expect(useSync.getState().conflicts).toBe(0);
   });
 
   it('修改密码：成功后弹出新的恢复码，并能用新密码解锁', async () => {

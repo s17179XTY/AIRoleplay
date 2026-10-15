@@ -3,6 +3,7 @@ import { useSync, type SyncSeams } from '../../state/useSync';
 import { formatRecoveryCode } from '../../core/sync/kdf';
 import { syncApiBaseUrl } from '../../core/sync/session';
 import DevicesPanel from './DevicesPanel';
+import ConflictPanel from './ConflictPanel';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
 
@@ -28,10 +29,10 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
   const username = useSync((s) => s.username);
   const status = useSync((s) => s.status);
   const pending = useSync((s) => s.pending);
-  const conflicts = useSync((s) => s.conflicts);
   const quota = useSync((s) => s.quota);
   const lastSyncAt = useSync((s) => s.lastSyncAt);
   const message = useSync((s) => s.message);
+  const pendingChoice = useSync((s) => s.pendingChoice);
   const refresh = useSync((s) => s.refresh);
 
   const [mode, setMode] = useState<'login' | 'register'>('register');
@@ -176,6 +177,49 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
     </div>
   ) : null;
 
+  /**
+   * 两边都有资料时的取舍（登录后 status === 'needs-choice'）。
+   * 必须在 pull 之前问：pull 一跑，本地那份就被盖掉了。
+   */
+  if (status === 'needs-choice') {
+    return (
+      <>
+        <section>
+          <h2 className="mb-2 text-[13px] font-semibold text-slate-600">账号</h2>
+          <div className="dsh-card space-y-3 p-3.5">
+            <div className="text-[13px] font-medium text-slate-700">这台装置和云端都有资料</div>
+            <div className="rounded-xl bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-700">
+              本机有 {pendingChoice?.localRows ?? '若干'} 笔内容，云端已用
+              {' '}{formatBytes(pendingChoice?.cloudBytes ?? 0)}。
+              两边内容不一样，需要你决定保留哪一边（这一步不能自动猜）。
+            </div>
+            <button
+              type="button"
+              disabled={busy}
+              className="dsh-btn w-full py-2.5 text-[13px]"
+              onClick={() => void run(() => useSync.getState().resolveConflictChoice('cloud', seams))}
+            >
+              以云端为准（这台装置的资料会被覆盖）
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              className="dsh-btn-ghost w-full py-2.5 text-[13px]"
+              onClick={() => void run(() => useSync.getState().resolveConflictChoice('local', seams))}
+            >
+              以本机为准（会覆盖云端）
+            </button>
+            <div className="text-[11px] leading-relaxed text-slate-400">
+              「以本机为准」会先给本机拍一份快照，再拉一遍云端（拿到版本号），最后用快照盖回去并推上去 ——
+              过程中不会丢掉任何一边还没备份的内容；真的担心就先「导出全部数据」。
+            </div>
+          </div>
+        </section>
+        {recoveryDialog}
+      </>
+    );
+  }
+
   if (username && status !== 'signed-out' && status !== 'locked') {
     const used = quota?.used ?? 0;
     const limit = quota?.limit ?? 1;
@@ -208,13 +252,7 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
             </div>
 
             {message && <div className="rounded-xl bg-black/5 px-3 py-2 text-[12px] text-slate-600">{message}</div>}
-            {conflicts > 0 && (
-              <div className="flex items-start justify-between gap-2 rounded-xl bg-amber-50 px-3 py-2 text-[12px] text-amber-700">
-                <span>{conflicts} 笔冲突已保留本地副本（另一台设备的改动被覆盖前会先留在这里）</span>
-                <button type="button" className="shrink-0 text-amber-800 underline"
-                  onClick={() => void useSync.getState().dismissConflicts()}>知道了</button>
-              </div>
-            )}
+            <ConflictPanel />
 
             <DevicesPanel seams={seams} />
 

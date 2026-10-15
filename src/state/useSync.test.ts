@@ -10,9 +10,10 @@ import { TEST_KDF } from '../core/sync/kdf';
 const INVITE = 'INV-UI';
 const BASE = 'https://api.test';
 let server: typeof fetch;
+let env: ReturnType<typeof makeWorkerEnv>;
 
 beforeEach(async () => {
-  const env = makeWorkerEnv();
+  env = makeWorkerEnv();
   await seedInvite(env, INVITE);
   server = makeFakeServer(env);
   saveTokens(null);
@@ -199,5 +200,70 @@ describe('useSync', () => {
     await expect(useSync.getState().deleteAccount({ fetchImpl: failing, baseUrl: BASE, kdf: TEST_KDF })).rejects.toThrow();
     expect(currentDbName()).toBe('dsh-roleplay@alice'); // 還在帳號庫
     expect((await db.settings.get('safe'))?.value).toBe('1'); // 本機資料沒被清掉
+  });
+
+  describe('两边都有资料时的取舍', () => {
+    /** 造出「alice 的库里有资料、但没有任何同步游标」＝从没同步过的本地资料 */
+    async function seedUnsyncedLocal() {
+      await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+      await db.settings.put({ key: 'fromA', value: 'A' });
+      await useSync.getState().runSync(seams());
+      await useSync.getState().logout();
+
+      await switchDatabase('dsh-roleplay@alice');
+      await db.settings.put({ key: 'fromB', value: 'B' });
+      await db.syncState.clear();     // 没有游标 = 这台装置没同步过
+    }
+
+    it('本地从没同步过、而且云端已有资料 → 先问，不自动 pull', async () => {
+      await seedUnsyncedLocal();
+
+      await useSync.getState().login({ username: 'alice', password: 'pw-123', ...seams() });
+
+      expect(useSync.getState().status).toBe('needs-choice');
+      expect(useSync.getState().pendingChoice?.localRows).toBeGreaterThan(0);
+      expect(useSync.getState().pendingChoice?.cloudBytes).toBeGreaterThan(0);
+      // 还没 pull，本地那份完好
+      expect((await db.settings.get('fromB'))?.value).toBe('B');
+    });
+
+    it('选「以云端为准」→ 拉下云端的资料，状态回到 idle', async () => {
+      await seedUnsyncedLocal();
+      await useSync.getState().login({ username: 'alice', password: 'pw-123', ...seams() });
+      expect(useSync.getState().status).toBe('needs-choice');
+
+      await useSync.getState().resolveConflictChoice('cloud', seams());
+
+      expect(useSync.getState().status).toBe('idle');
+      expect(useSync.getState().pendingChoice).toBeNull();
+      expect((await db.settings.get('fromA'))?.value).toBe('A');
+    });
+
+    it('选「以本机为准」→ 走「快照 → 拉 → 覆盖 → 推」四步，本机那份最后出现在云端', async () => {
+      await seedUnsyncedLocal();
+      await useSync.getState().login({ username: 'alice', password: 'pw-123', ...seams() });
+      expect(useSync.getState().status).toBe('needs-choice');
+
+      await useSync.getState().resolveConflictChoice('local', seams());
+
+      // 本机那份还在
+      expect((await db.settings.get('fromB'))?.value).toBe('B');
+      // 而且真的推上云了（云端点是假的 D1，直接查）
+      const pushed = await env.DB.prepare("SELECT id FROM records WHERE kind = 'setting' AND id = 'fromB'")
+        .first<{ id: string }>();
+      expect(pushed?.id).toBe('fromB');
+    });
+
+    it('同一台装置重新登入（有游标）不会被问第二次', async () => {
+      await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+      await db.settings.put({ key: 'fromA', value: 'A' });
+      await useSync.getState().runSync(seams());
+      await useSync.getState().logout();
+
+      await useSync.getState().login({ username: 'alice', password: 'pw-123', ...seams() });
+
+      expect(useSync.getState().status).toBe('idle');
+      expect((await db.settings.get('fromA'))?.value).toBe('A');
+    });
   });
 });

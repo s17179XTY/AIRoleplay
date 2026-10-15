@@ -325,3 +325,44 @@ export async function syncNow(ctx: EngineContext): Promise<{
   const pulled = await pullChanges(ctx);
   return { pushed, conflicts, applied: pulled.applied, cursor: pulled.cursor };
 }
+
+/* ------------------------------------------------------------------ *
+ * 登入時的「兩邊都有資料」取捨（spec §6）
+ * ------------------------------------------------------------------ */
+
+export interface ContentSnapshot {
+  table: string;
+  rows: Record<string, unknown>[];
+}
+
+/** 給內容表拍一張快照（不含同步用的本地表）。「以本地為準」時要先拍，否則 pull 會蓋掉它 */
+export async function snapshotContentTables(db: DshDB): Promise<ContentSnapshot[]> {
+  const out: ContentSnapshot[] = [];
+  for (const [kind, table] of Object.entries(SYNC_TABLES) as [SyncKind, string][]) {
+    void kind;
+    const rows = (await db.table(table).toArray()) as Record<string, unknown>[];
+    if (rows.length > 0) out.push({ table, rows });
+  }
+  return out;
+}
+
+/** 把快照蓋回本地（會經過 outbox 收斂點 → 自動排進待推送） */
+export async function restoreContentTables(db: DshDB, snapshot: ContentSnapshot[]): Promise<void> {
+  for (const { table, rows } of snapshot) {
+    await db.table(table).bulkPut(rows as never);
+  }
+}
+
+/** 本地一共有幾筆內容（用來判斷「兩邊是不是都有資料」） */
+export async function contentRowCount(db: DshDB): Promise<number> {
+  let total = 0;
+  for (const table of Object.values(SYNC_TABLES)) {
+    total += await db.table(table).count();
+  }
+  return total;
+}
+
+/** 把增量游標歸零，讓下一次 pull 從頭拉一遍（「以本地為準」時用） */
+export async function resetCursor(db: DshDB): Promise<void> {
+  await db.syncState.put({ key: 'cursor', value: '0' });
+}

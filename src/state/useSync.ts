@@ -9,7 +9,10 @@ import {
 } from '../core/sync/kdf';
 import { generateDek, unwrapDek, wrapDek } from '../core/sync/envelope';
 import { canonicalInviteCode } from '../core/sync/invite';
-import { initialPush, syncNow, type EngineContext } from '../core/sync/engine';
+import {
+  contentRowCount, initialPush, resetCursor, restoreContentTables, snapshotContentTables, syncNow,
+  type EngineContext,
+} from '../core/sync/engine';
 import { pendingCount } from '../core/sync/outbox';
 import { LOCAL_ONLY_TABLES } from '../core/sync/kinds';
 import { db, switchDatabase, currentDbName, dbNameFor, DEFAULT_DB_NAME, type DshDB } from '../core/storage/db';
@@ -17,7 +20,7 @@ import { clearLocalData } from '../core/storage/reset';
 import { resetSettingCache } from './useSetting';
 import { bumpData } from './useData';
 
-export type SyncStatus = 'signed-out' | 'locked' | 'idle' | 'syncing' | 'error';
+export type SyncStatus = 'signed-out' | 'locked' | 'needs-choice' | 'idle' | 'syncing' | 'error';
 
 export interface SyncUiState {
   username: string | null;
@@ -28,6 +31,8 @@ export interface SyncUiState {
   lastSyncAt: number | null;
   message: string | null;
   devices: DeviceInfo[];
+  /** status === 'needs-choice' 时，两边的资料量（给使用者判断） */
+  pendingChoice: { localRows: number; cloudBytes: number } | null;
 }
 
 /** 測試用的接縫：讓測試注入假伺服器、假 baseUrl 與低成本 KDF */
@@ -56,6 +61,10 @@ export interface SyncActions {
   ): Promise<{ recoveryCode: string }>;
   /** 刪除帳號：雲端與本機一起清掉（不可復原） */
   deleteAccount(seams?: SyncSeams): Promise<void>;
+  /** 兩邊都有資料時的选择（login 之後 status === 'needs-choice'） */
+  resolveConflictChoice(choice: 'cloud' | 'local', seams?: SyncSeams): Promise<void>;
+  /** 给冲突面板解密用：拿当前解锁后的 DEK（没解锁就是 null） */
+  currentDek(): CryptoKey | null;
 }
 
 const INITIAL: SyncUiState = {
@@ -67,6 +76,7 @@ const INITIAL: SyncUiState = {
   lastSyncAt: null,
   message: null,
   devices: [],
+  pendingChoice: null,
 };
 
 /** DEK 只存在記憶體：重新載入頁面後必須重新輸入密碼解鎖（spec §9） */
@@ -217,10 +227,64 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       saveUsername(name);
       saveKdf(name, serverKdf);
       await switchDatabase(dbNameFor(name));
-      set({ username: name, status: 'idle', message: null });
       resetSettingCache();
       bumpData('login');
+
+      /*
+       * 兩邊都有資料時先問使用者要哪一邊（spec §6）。
+       * 一定要在 pull 之前問 —— pull 一跑，本地那份就被蓋掉了，選擇也就沒有意義。
+       *
+       * 但「同一台裝置重新登入」不算：那种情况本机与云端本来就是同一批资料。
+       * 判据是 **这个库里有没有同步游标** —— 有游标 = 这台装置同步过，直接拉就好；
+       * 没有游标 + 本地非空 + 云端非空 = 真的是「两个来源第一次碰面」，才需要问。
+       */
+      const localRows = await contentRowCount(db);
+      const everSynced = Boolean(await db.syncState.get('cursor').catch(() => undefined));
+      if (!everSynced && localRows > 0 && me.quota.used > 0) {
+        set({
+          username: name,
+          status: 'needs-choice',
+          pendingChoice: { localRows, cloudBytes: me.quota.used },
+          message: '这台装置和云端都有资料，请选择要保留哪一边',
+        });
+        return;
+      }
+
+      set({ username: name, status: 'idle', message: null, pendingChoice: null });
       await get().runSync(seams);
+    } catch (err) {
+      set({ status: 'error', message: errorMessage(err) });
+      throw err;
+    }
+  },
+
+  currentDek() {
+    return currentDek;
+  },
+
+  /**
+   * 使用者对「两边都有资料」的选择：
+   * - cloud：什么都不做，直接 pull（云端赢）
+   * - local：**先给本地拍快照 → 归零游标拉一遍（拿到 rev）→ 用快照盖回去 → 推上去**。
+   *   第 3 步不能省：pull 会先把云端内容写进本地表，不快照就等于「选了本地赢、结果还是云端赢」。
+   */
+  async resolveConflictChoice(choice, seams = {}) {
+    const username = get().username;
+    if (!username || !currentDek) return;
+    set({ status: 'syncing', message: null });
+    try {
+      const client = makeClient(seams);
+      const ctx = context(client);
+      if (choice === 'local') {
+        const snapshot = await snapshotContentTables(db);
+        await resetCursor(db);
+        await syncNow(ctx);              // 先拉一遍，让本地 rev 与云端一致
+        await restoreContentTables(db, snapshot);
+        await get().runSync(seams);      // 再把本地这份推上去
+      } else {
+        await get().runSync(seams);
+      }
+      set({ pendingChoice: null, message: choice === 'local' ? '已用本机资料覆盖云端' : '已以云端资料为准' });
     } catch (err) {
       set({ status: 'error', message: errorMessage(err) });
       throw err;
