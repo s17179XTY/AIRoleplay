@@ -3,6 +3,8 @@ import { waitFor } from '@testing-library/react';
 import { db, DEFAULT_DB_NAME, switchDatabase } from '../core/storage/db';
 import { createMockAdapter } from '../core/providers/mock';
 import { setAdapter, useSession } from './useSession';
+import { listSummaries } from '../core/storage/memoryStore';
+import { SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE } from '../core/storage/types';
 import type { ProviderAdapter, StreamEvent } from '../core/providers/types';
 
 function abortError(): Error {
@@ -39,7 +41,8 @@ beforeEach(async () => {
   await db.configs.clear();
   useSession.setState({
     ready: false, cardId: null, cardName: '', card: null, modelLabel: 'mock', chatId: null,
-    messages: [], draft: '', streaming: false, error: null, regexRules: [], memories: [], memoryCount: 0, cardUiHtml: null,
+    messages: [], draft: '', streaming: false, summarizing: false, error: null,
+    regexRules: [], memories: [], memoryCount: 0, cardUiHtml: null,
   });
   setAdapter(createMockAdapter('回复内容', { chunkSize: 100, delayMs: 0 }));
 });
@@ -73,7 +76,7 @@ describe('会话 store', () => {
     expect(useSession.getState().messages).toHaveLength(4);
   });
 
-  it('AI 输出里的记忆被托管；但不再当成独立条目注入（改由摘要库接管）', async () => {
+  it('AI 输出里的记忆块不再被存成条目；窗口内的原文保留它、也不独立注入', async () => {
     const seen: string[][] = [];
     setAdapter({
       id: 'mock',
@@ -90,13 +93,14 @@ describe('会话 store', () => {
     });
     await useSession.getState().init();
     await useSession.getState().send('第一句');
-    const stored = await db.memories.toArray();
-    expect(stored).toHaveLength(1);
-    expect(stored[0].text).toContain('拆穿了偷窥者');
+    // 新设计：记忆块不再解析进表（表里只放「掉出窗口的交换」压出来的摘要）
+    expect(await db.memories.count()).toBe(0);
 
     await useSession.getState().send('第二句');
     const secondCall = seen[seen.length - 1].join('\n');
-    // 新设计：窗口内的原文保留记忆块，但**不再**把它归成【近期记忆】独立注入
+    // 窗口内的原文完整保留（不再剥离记忆块）…
+    expect(secondCall).toContain('拆穿了偷窥者');
+    // …但不会被归成【近期记忆】独立注入（那是旧设计，会造成重复）
     expect(secondCall).not.toContain('【近期记忆】');
     expect(secondCall).not.toContain('【永久记忆】');
   });
@@ -235,5 +239,68 @@ describe('会话 store', () => {
 
     // 還原，別影響後面的用例
     await switchDatabase(DEFAULT_DB_NAME);
+  });
+
+  /**
+   * 回归：切到别的 tab 时 PlayScreen 会被卸载，切回来会重新挂载并再叫一次 init()。
+   * 没有幂等守卫的话 openCard() 会把 streaming / draft 重置掉 ——
+   * 生成其实还在跑，但停止按钮变回发送、吐到一半的草稿消失。
+   */
+  it('init 是幂等的：再叫一次不会重置 streaming / draft', async () => {
+    await useSession.getState().init();
+    useSession.setState({ streaming: true, draft: '吐到一半' });
+    await useSession.getState().init();
+    expect(useSession.getState().streaming).toBe(true);
+    expect(useSession.getState().draft).toBe('吐到一半');
+  });
+
+  it('窗口外的交换会被压成摘要，注入时带「不是最新消息」前缀', async () => {
+    const seen: string[][] = [];
+    setAdapter({
+      id: 'mock',
+      async listModels() { return []; },
+      async *streamChat(_cfg, req) {
+        seen.push(req.messages.map((m) => m.content));
+        yield { type: 'text', delta: '<plot>正文</plot>' };
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    });
+    await db.settings.put({ key: SETTING_CONTEXT_MODE, value: 'recent' });
+    await db.settings.put({ key: SETTING_CONTEXT_LIMIT, value: '2' });
+    await useSession.getState().init();
+    for (let i = 1; i <= 4; i += 1) await useSession.getState().send(`第${i}句`);
+
+    const chatId = useSession.getState().chatId!;
+    const summaries = await listSummaries(chatId);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(summaries[0].origin).toBe('model');
+    expect(summaries[0].fromMessageId).toBeTruthy();
+    expect(summaries[0].rangeLabel).toContain('第');
+
+    const lastCall = seen[seen.length - 1].join('\n');
+    expect(lastCall).toContain('更早的对话摘要');
+    expect(lastCall).toContain('不是最新消息');
+  });
+
+  it('压缩期间禁止发送', async () => {
+    await useSession.getState().init();
+    useSession.setState({ summarizing: true });
+    await useSession.getState().send('不该送出去');
+    expect(useSession.getState().streaming).toBe(false);
+    expect(useSession.getState().messages.some((m) => m.raw === '不该送出去')).toBe(false);
+    useSession.setState({ summarizing: false });
+  });
+
+  it('preview() 的数字来自真实的 assemble（与发送时同一套）', async () => {
+    await useSession.getState().init();
+    await useSession.getState().send('你好');
+    const p = await useSession.getState().preview();
+    expect(p.totalTokens).toBeGreaterThan(0);
+    expect(p.budget).toBeGreaterThan(0);
+    expect(p.mode).toBe('recent');
+    expect(p.windowLimit).toBe(6);
+    expect(p.windowCount).toBe(2);
+    expect(p.rows.some((r) => r.label.startsWith('历史'))).toBe(true);
+    expect(p.rows.some((r) => r.label === '系统提示词')).toBe(true);
   });
 });

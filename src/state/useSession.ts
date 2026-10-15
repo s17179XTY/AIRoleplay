@@ -1,21 +1,27 @@
 import { create } from 'zustand';
 import { db, newId } from '../core/storage/db';
 import type { ConfigRecord, MemoryRecord, MessageRecord } from '../core/storage/types';
-import { DEFAULT_CAPABILITY, DEFAULT_PARAMS } from '../core/storage/types';
+import {
+  DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_CONTEXT_MODE, DEFAULT_PARAMS,
+  DEFAULT_SUMMARY_BATCH, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE,
+  SETTING_SUMMARY_BATCH, SETTING_SUMMARY_ENABLED, SUMMARY_FAIL_LIMIT,
+  type ContextMode,
+} from '../core/storage/types';
 import { assemble } from '../core/assembler/assemble';
+import { computeWindow } from '../core/assembler/window';
+import { skeletonSummary, summarizeBatch } from '../core/assembler/summarize';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import { isAbortError, type ProviderAdapter } from '../core/providers/types';
 import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
 import { findText } from '../core/cards/package';
 import { getActive } from '../core/storage/providerRepo';
 import { displayRules, loadRulesForChat, promptRules } from '../core/storage/regexRepo';
-import { applyRegexRules, stripMemoryAndThink, type RegexRule } from '../core/cards/regex';
-import { deleteMemory, ingestMemories, listMemories, toSummaryItems } from '../core/storage/memoryStore';
+import { applyRegexRules, stripThink, type RegexRule } from '../core/cards/regex';
+import { addSummary, deleteSummary, listSummaries, toSummaryItems, trimSummaries } from '../core/storage/memoryStore';
+import { listEnabledMods } from '../core/storage/modRepo';
 import { migrateMemorySchema } from '../core/storage/migrate';
-import { extractAll } from '../core/render/extract';
 import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
-import { MEMORY_ENABLED_KEY } from '../core/storage/reset';
 
 const MOCK_CFG = { id: 'mock', baseUrl: '', apiKey: '', extraHeaders: {} };
 
@@ -26,6 +32,48 @@ export function setAdapter(a: ProviderAdapter | null): void {
 
 /** 目前這輪生成的取消把手。使用者按「停止」就是 abort 它。 */
 let currentAbort: AbortController | null = null;
+
+/** 摘要壓縮的取消把手（與主生成分開，但一樣可以被「停止」打斷） */
+let summarizeAbort: AbortController | null = null;
+
+/** 同一段連續失敗幾次（key = chatId|第一批的訊息 id）。連續失敗 SUMMARY_FAIL_LIMIT 次就退化成本地骨架 */
+const summaryFailures = new Map<string, number>();
+
+export interface ContextSettings {
+  mode: ContextMode;
+  limit: number;
+  summaryEnabled: boolean;
+  batch: number;
+}
+
+export async function readContextSettings(): Promise<ContextSettings> {
+  const [mode, limit, enabled, batch] = await Promise.all([
+    db.settings.get(SETTING_CONTEXT_MODE).catch(() => undefined),
+    db.settings.get(SETTING_CONTEXT_LIMIT).catch(() => undefined),
+    db.settings.get(SETTING_SUMMARY_ENABLED).catch(() => undefined),
+    db.settings.get(SETTING_SUMMARY_BATCH).catch(() => undefined),
+  ]);
+  const n = Number(limit?.value ?? DEFAULT_CONTEXT_LIMIT);
+  const b = Number(batch?.value ?? DEFAULT_SUMMARY_BATCH);
+  return {
+    mode: mode?.value === 'all' ? 'all' : DEFAULT_CONTEXT_MODE,
+    limit: Number.isInteger(n) && n >= 1 ? n : DEFAULT_CONTEXT_LIMIT,
+    summaryEnabled: enabled?.value !== '0',
+    batch: Number.isInteger(b) && b >= 1 ? b : DEFAULT_SUMMARY_BATCH,
+  };
+}
+
+function formatDateLabel(messages: MessageRecord[]): string {
+  const fmt = (ts: number) => {
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  if (messages.length === 0) return '';
+  const first = fmt(messages[0].createdAt);
+  const last = fmt(messages[messages.length - 1].createdAt);
+  return first === last ? first : `${first} ~ ${last}`;
+}
+
 
 export function isStreamingAbortable(): boolean {
   return currentAbort !== null;
@@ -51,6 +99,8 @@ export interface SessionState {
   messages: MessageRecord[];
   draft: string;
   streaming: boolean;
+  /** 正在把掉出窗口的交换压成摘要（期间禁止发送） */
+  summarizing: boolean;
   error: string | null;
   init: () => Promise<void>;
   openCard: (cardId: string) => Promise<void>;
@@ -58,12 +108,27 @@ export interface SessionState {
   /** 換庫 / 同步之後把畫面上的資料重讀一次（沒有它就會「同步完 UI 沒更新」） */
   reload: () => Promise<void>;
   refreshModelLabel: () => Promise<void>;
+  restartSummary: () => void;
+  /** 上下文占用预览（HUD 用）：跑一次本地组装，不发请求 */
+  preview: () => Promise<ContextPreview>;
   startFromUi: (cardId: string, prompt: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   /** 停止生成：保住已經吐出來的部分，不當成錯誤 */
   stop: () => void;
   branchTo: (messageId: string) => Promise<void>;
   regenerate: () => Promise<void>;
+}
+
+export interface ContextPreview {
+  rows: { label: string; tokens: number }[];
+  totalTokens: number;
+  budget: number;
+  droppedHistory: number;
+  droppedWorldbook: number;
+  windowCount: number;
+  windowLimit: number | null;
+  mode: ContextMode;
+  summaryCount: number;
 }
 
 async function pathToLeaf(chatId: string, leafId: string | null): Promise<MessageRecord[]> {
@@ -93,13 +158,124 @@ function macroContext(cardName: string, persona: string) {
   };
 }
 
-/** 記憶托管是否開啟（關掉就只當普通文字顯示，不解析、不回注） */
+/** 記憶托管是否開啟（＝要不要自動生成摘要；關掉就完全不生成、不注入摘要） */
 export async function memoryEnabled(): Promise<boolean> {
-  const row = await db.settings.get(MEMORY_ENABLED_KEY).catch(() => undefined);
-  return row?.value !== '0';
+  return (await readContextSettings()).summaryEnabled;
 }
 
 export const useSession = create<SessionState>((set, get) => {
+  /**
+   * 把「掉出上下文窗口的交换」交给模型压成摘要。
+   *
+   * 规则（spec §2，使用者逐条确认过）：
+   * - 只要攒够 `summaryBatchPairs` 对（默认 1）就压；
+   * - 只压**完整交换**（computeWindow 已把边界对齐，绝不压半对）；
+   * - 一次请求压一批，输出分「用户 / 叙事」两段；
+   * - 期间 `summarizing = true`，发送被挡住（它要读当前上下文，中途发消息会冲突）；
+   * - 失败不吞：保留 pending 下次再试；连续失败 SUMMARY_FAIL_LIMIT 次 → 本地骨架兜底。
+   */
+  const ensureSummaries = async (input: {
+    chatId: string;
+    path: MessageRecord[];
+    settings: ContextSettings;
+    streamer: ProviderAdapter | null;
+    cfg: { id: string; baseUrl: string; apiKey: string; extraHeaders: Record<string, string> };
+    model: string;
+    signal: AbortSignal;
+  }): Promise<number> => {
+    const { chatId, path, settings, streamer, cfg, model, signal } = input;
+    if (!settings.summaryEnabled || path.length === 0) return 0;
+
+    const { outsideIds } = computeWindow({
+      messages: path.map((m) => ({ id: m.id, role: m.role })),
+      mode: settings.mode,
+      limit: settings.limit,
+    });
+    if (outsideIds.length === 0) return 0;
+
+    const existing = await listSummaries(chatId);
+    const lastTo = existing.length > 0 ? existing[existing.length - 1].toMessageId : undefined;
+    const coveredIdx = lastTo ? path.findIndex((m) => m.id === lastTo) : -1;
+    const outside = new Set(outsideIds);
+    const batch: MessageRecord[] = [];
+    path.forEach((m, i) => {
+      if (i > coveredIdx && outside.has(m.id)) batch.push(m);
+    });
+    if (batch.length === 0) return 0;
+
+    // 阈值以「对」为单位；batch 已经是完整的交换，用条数/2 估算对数（不足一对也算一对）
+    const pairs = Math.max(1, Math.ceil(batch.length / 2));
+    if (pairs < settings.batch) return 0;
+
+    const firstIdx = path.indexOf(batch[0]);
+    const lastIdx = path.indexOf(batch[batch.length - 1]);
+    const rangeLabel = `第 ${firstIdx + 1}–${lastIdx + 1} 条`;
+    const dateLabel = formatDateLabel(batch);
+    const failKey = `${chatId}|${batch[0].id}`;
+    const previousTail = existing.length > 0
+      ? (existing[existing.length - 1].assistantText ?? existing[existing.length - 1].text).slice(-200)
+      : undefined;
+
+    const controller = new AbortController();
+    summarizeAbort = controller;
+    const relay = () => controller.abort();
+    signal.addEventListener('abort', relay, { once: true });
+    set({ summarizing: true });
+
+    try {
+      let origin: 'model' | 'local-skeleton' = 'model';
+      let part;
+      if (!streamer) {
+        // 沒有可用的模型（还没接服务商）：直接本地骨架，宁可粗糙也不能丢
+        part = skeletonSummary(batch.map((m) => ({ role: m.role, content: m.raw })), firstIdx + 1, lastIdx + 1);
+        origin = 'local-skeleton';
+      } else {
+        try {
+          part = await summarizeBatch({
+            adapter: streamer,
+            cfg,
+            model,
+            batch: batch.map((m) => ({ role: m.role, content: m.raw })),
+            previousTail,
+            signal: controller.signal,
+          });
+          summaryFailures.delete(failKey);
+        } catch (err) {
+          if (controller.signal.aborted || isAbortError(err)) return 0; // 使用者取消：不写入，下次再试
+          const n = (summaryFailures.get(failKey) ?? 0) + 1;
+          summaryFailures.set(failKey, n);
+          if (n < SUMMARY_FAIL_LIMIT) return 0;                        // 还没到阈值：保留 pending，下次重试
+          part = skeletonSummary(batch.map((m) => ({ role: m.role, content: m.raw })), firstIdx + 1, lastIdx + 1);
+          origin = 'local-skeleton';
+        }
+      }
+
+      const text = part.userText
+        ? `[用户] ${part.userText}\n[叙事] ${part.assistantText}`
+        : `[叙事] ${part.assistantText}`;
+      await addSummary({
+        chatId,
+        text,
+        userText: part.userText || undefined,
+        assistantText: part.assistantText || undefined,
+        dateLabel,
+        rangeLabel,
+        fromMessageId: batch[0].id,
+        toMessageId: batch[batch.length - 1].id,
+        messageCount: batch.length,
+        origin,
+      });
+      await trimSummaries(chatId);
+      const list = await listSummaries(chatId);
+      set({ memories: list, memoryCount: list.length });
+      return 1;
+    } finally {
+      signal.removeEventListener('abort', relay);
+      if (summarizeAbort === controller) summarizeAbort = null;
+      set({ summarizing: false });
+    }
+  };
+
   /**
    * 真的去串流並把 assistant 訊息落地。
    * send 與 regenerate 共用它：差別只在「掛在誰下面」與「這一輪的使用者輸入是什麼」，
@@ -123,14 +299,23 @@ export const useSession = create<SessionState>((set, get) => {
   }): Promise<void> => {
     const { chatId, parentId, userText, historyPath, card, setup, configRow, controller } = input;
     const toPromptRules = promptRules(await loadRulesForChat(chatId, card));
-    const memoryRecords = await listMemories(chatId);
-    const stripMemories = card.json.memory?.stripFromHistory !== false;
-    const historyItems = historyPath.map((m) => {
-      let content = stripMemories ? stripMemoryAndThink(m.raw) : m.raw;
+    const settings = await readContextSettings();
+    const active = await getActive();
+
+    // 只把窗口内的消息送进提示词；窗口外的已经由 ensureSummaries 压成摘要
+    const windowed = computeWindow({
+      messages: historyPath.map((m) => ({ id: m.id, role: m.role })),
+      mode: settings.mode,
+      limit: settings.limit,
+    });
+    const windowSet = new Set(windowed.windowIds);
+    const inWindow = historyPath.filter((m) => windowSet.has(m.id));
+
+    const historyItems = inWindow.map((m) => {
+      let content = stripThink(m.raw);
       if (toPromptRules.length > 0) content = applyRegexRules(content, toPromptRules);
       return { id: m.id, role: m.role, content };
     });
-    const active = await getActive();
     const assembled = assemble({
       card: {
         pre: card.json.prompts.pre,
@@ -146,7 +331,8 @@ export const useSession = create<SessionState>((set, get) => {
         postPrompt: configRow?.postPrompt ?? '',
       },
       worldbook: worldbookOf(card),
-      summaries: toSummaryItems(memoryRecords),
+      summaries: toSummaryItems(await listSummaries(chatId)),
+      mods: await listEnabledMods(),
       history: historyItems,
       userInput: userText,
       setup,
@@ -226,13 +412,9 @@ export const useSession = create<SessionState>((set, get) => {
     await db.messages.add(assistantMsg);
     await db.chats.update(chatId, { currentLeafId: assistantMsg.id, updatedAt: Date.now() });
 
-    if (!failure && (await memoryEnabled()) && card.json.memory?.parser !== 'none' && acc.trim()) {
-      const extracted = extractAll(acc).memories;
-      const limit = configRow?.memoryLimit ?? card.json.memory?.recentLimit ?? 6;
-      await ingestMemories(chatId, assistantMsg.id, extracted, limit);
-    }
+    // 记忆托管不再把 AI 回复里的记忆块抓进表里 —— 窗口外的内容由摘要库接管（见 ensureSummaries）
     const freshRules = await loadRulesForChat(chatId, card);
-    const memories = await listMemories(chatId);
+    const memories = await listSummaries(chatId);
     set({
       messages: await pathToLeaf(chatId, assistantMsg.id),
       regexRules: displayRules(freshRules),
@@ -258,9 +440,17 @@ export const useSession = create<SessionState>((set, get) => {
     messages: [],
     draft: '',
     streaming: false,
+    summarizing: false,
     error: null,
 
     init: async () => {
+      /**
+       * 幂等守卫：切到别的 tab 时 PlayScreen 会被卸载，切回来会重新挂载并再叫一次 init()。
+       * 没有这个守卫的话，openCard() 会把 streaming / draft 重置掉 ——
+       * 生成其实还在后台跑，但停止按钮变回发送、吐到一半的草稿消失，
+       * 使用者看到的就是「切页面 AI 回复被截停、回来没办法停」。
+       */
+      if (get().ready) return;
       await db.open();
       // 旧版的「近期/永久记忆」条目一律清掉（逐条删 → 产生墓碑 → 云端也会一起清）
       await migrateMemorySchema();
@@ -304,7 +494,8 @@ export const useSession = create<SessionState>((set, get) => {
       }
       const activePreset = await getActive();
       const rules = await loadRulesForChat(chat.id, card);
-      const memories = await listMemories(chat.id);
+      const memories = await listSummaries(chat.id);
+      const inFlight = get().streaming || get().summarizing;
       set({
         ready: true,
         cardId,
@@ -312,14 +503,15 @@ export const useSession = create<SessionState>((set, get) => {
         modelLabel: activePreset ? activePreset.provider.label + ' · ' + activePreset.preset.model : 'mock 模拟模型',
         cardName: card.json.name,
         chatId: chat.id,
-        messages: await pathToLeaf(chat.id, chat.currentLeafId),
+        // 正在生成时不要把画面重设：draft / streaming 必须原样留着
+        messages: inFlight ? get().messages : await pathToLeaf(chat.id, chat.currentLeafId),
         regexRules: displayRules(rules),
         cardUiHtml: card.json.ui?.entry ? findText(card, card.json.ui.entry) ?? null : null,
         memoryCount: memories.length,
         memories,
         error: null,
-        draft: '',
-        streaming: false,
+        draft: inFlight ? get().draft : '',
+        streaming: inFlight ? get().streaming : false,
       });
     },
 
@@ -357,6 +549,89 @@ export const useSession = create<SessionState>((set, get) => {
       set({ modelLabel: active ? active.provider.label + ' · ' + active.preset.model : 'mock 模拟模型' });
     },
 
+    restartSummary: () => {
+      // 取消当前压缩：不写入，下次发送前会重试
+      summarizeAbort?.abort();
+    },
+
+    preview: async (): Promise<ContextPreview> => {
+      const { chatId, card } = get();
+      const settings = await readContextSettings();
+      const empty: ContextPreview = {
+        rows: [], totalTokens: 0, budget: 0, droppedHistory: 0, droppedWorldbook: 0,
+        windowCount: 0, windowLimit: settings.mode === 'recent' ? settings.limit : null,
+        mode: settings.mode, summaryCount: 0,
+      };
+      if (!chatId || !card) return empty;
+
+      const chat = await db.chats.get(chatId);
+      const path = await pathToLeaf(chatId, chat?.currentLeafId ?? null);
+      const windowed = computeWindow({
+        messages: path.map((m) => ({ id: m.id, role: m.role })),
+        mode: settings.mode,
+        limit: settings.limit,
+      });
+      const windowSet = new Set(windowed.windowIds);
+      const summaries = await listSummaries(chatId);
+      const configRow = await db.configs.where('scope').equals('global').first();
+      const active = await getActive();
+      const assembled = assemble({
+        card: {
+          pre: card.json.prompts.pre, prompt: card.json.prompts.prompt, post: card.json.prompts.post,
+          description: card.json.description, persona: card.json.persona.intro, scenario: card.json.scenario,
+        },
+        config: {
+          prompt: configRow?.prompt ?? '', prePrompt: configRow?.prePrompt ?? '', postPrompt: configRow?.postPrompt ?? '',
+        },
+        worldbook: worldbookOf(card),
+        summaries: toSummaryItems(summaries),
+        mods: await listEnabledMods(),
+        history: path.filter((m) => windowSet.has(m.id)).map((m) => ({ id: m.id, role: m.role, content: m.raw })),
+        userInput: get().draft,
+        setup: chat?.promptSnapshot ?? '',
+        macros: macroContext(card.json.name, card.json.persona.intro),
+        limits: {
+          contextLength: active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
+          maxTokens: active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
+          reserve: 512,
+          worldbookTokenBudget: 2000,
+        },
+      });
+
+      const LABELS: Record<string, string> = {
+        'card-pre': '系统提示词', 'config-prompt': '系统提示词', 'config-pre': '系统提示词',
+        'card-system': '系统提示词', 'chat-setup': '系统提示词',
+        mod: 'MOD', worldbook: '世界书', memory: '更早的记忆', history: '历史',
+        user: '本轮输入', 'config-post': '后置词', 'card-post': '后置词',
+      };
+      const totals = new Map<string, number>();
+      for (const e of assembled.entries) {
+        const label = LABELS[e.source] ?? '其他';
+        totals.set(label, (totals.get(label) ?? 0) + e.tokens);
+      }
+      const order = ['系统提示词', 'MOD', '世界书', '更早的记忆', '历史', '本轮输入', '后置词', '其他'];
+      const rows = order
+        .filter((label) => (totals.get(label) ?? 0) > 0)
+        .map((label) => ({ label: label === '历史' ? `历史（${windowed.windowIds.length} 条）` : label, tokens: totals.get(label) ?? 0 }));
+      if (summaries.length > 0 && !rows.some((r) => r.label.startsWith('更早的记忆'))) {
+        rows.splice(3, 0, { label: `更早的记忆（${summaries.length} 条）`, tokens: 0 });
+      }
+
+      const maxTokens = active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens;
+      const contextLength = active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength;
+      return {
+        rows,
+        totalTokens: assembled.totalTokens,
+        budget: contextLength - maxTokens - 512,
+        droppedHistory: assembled.dropped.filter((d) => d.source === 'history').length,
+        droppedWorldbook: assembled.dropped.filter((d) => d.source === 'worldbook').length,
+        windowCount: windowed.windowIds.length,
+        windowLimit: settings.mode === 'recent' ? settings.limit : null,
+        mode: settings.mode,
+        summaryCount: summaries.length,
+      };
+    },
+
     startFromUi: async (cardId: string, prompt: string) => {
       const card = await loadCardPackage(cardId);
       if (!card) return;
@@ -376,7 +651,8 @@ export const useSession = create<SessionState>((set, get) => {
     send: async (text: string) => {
       const { chatId, card } = get();
       const clean = text.trim();
-      if (!chatId || !clean || get().streaming || !card) return;
+      // 压缩期间禁止发送：它要读当前上下文，中途发消息会让摘要对不上
+      if (!chatId || !clean || get().streaming || get().summarizing || !card) return;
       // 同步建立取消把手（見 streamReply 的說明）：這之後到真正串流之間還有一串 await
       const controller = new AbortController();
       currentAbort = controller;
@@ -393,15 +669,41 @@ export const useSession = create<SessionState>((set, get) => {
       await db.chats.update(chatId, { currentLeafId: userMsg.id, updatedAt: Date.now() });
 
       const historyPath = await pathToLeaf(chatId, userMsg.id);
+      const before = historyPath.slice(0, -1);
       // 畫面上要立刻看到剛送出的使用者訊息；提示詞的歷史則不含這一則（它在 userInput 裡）
       set({ messages: historyPath, draft: '', streaming: true, error: null });
+
+      // 先把掉出窗口的交换压成摘要，再做主生成（顺序固定，两条流不会并发）
+      const settings = await readContextSettings();
+      const active = await getActive();
+      const summaryStreamer = active ? adapterFor(active.provider.protocol) : adapter;
+      const summaryCfg = active
+        ? {
+            id: active.provider.id, baseUrl: active.provider.baseUrl,
+            apiKey: active.provider.apiKey, extraHeaders: active.provider.extraHeaders,
+          }
+        : MOCK_CFG;
+      await ensureSummaries({
+        chatId,
+        path: before,
+        settings,
+        streamer: summaryStreamer,
+        cfg: summaryCfg,
+        model: active?.preset.model ?? 'mock',
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) {
+        // 連摘要都還沒做完就被停掉：保留剛送出的使用者訊息，不要讓它從畫面上消失
+        set({ messages: await pathToLeaf(chatId, userMsg.id), draft: '', streaming: false, error: null });
+        return;
+      }
 
       const configRow = await db.configs.where('scope').equals('global').first();
       await streamReply({
         chatId,
         parentId: userMsg.id,
         userText: clean,
-        historyPath: historyPath.slice(0, -1),
+        historyPath: before,
         card,
         setup: setupPrompt,
         configRow,
@@ -412,6 +714,7 @@ export const useSession = create<SessionState>((set, get) => {
     stop: () => {
       // 可能還在「組提示詞」階段：abort 之後 streamReply 會在最前面就收工
       currentAbort?.abort();
+      summarizeAbort?.abort();
     },
 
     openChat: async (chatId: string) => {
@@ -420,7 +723,7 @@ export const useSession = create<SessionState>((set, get) => {
       const card = await loadCardPackage(chat.cardId);
       if (!card) return;
       const rules = await loadRulesForChat(chatId, card);
-      const memories = await listMemories(chatId);
+      const memories = await listSummaries(chatId);
       set({
         ready: true, cardId: chat.cardId, card, cardName: card.json.name, chatId,
         messages: await pathToLeaf(chatId, chat.currentLeafId),
@@ -504,10 +807,10 @@ export const useSession = create<SessionState>((set, get) => {
     },
 
     removeMemory: async (id: string) => {
-      await deleteMemory(id);
+      await deleteSummary(id);
       const { chatId } = get();
       if (!chatId) return;
-      const memories = await listMemories(chatId);
+      const memories = await listSummaries(chatId);
       set({ memories, memoryCount: memories.length });
     },
 
