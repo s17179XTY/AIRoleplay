@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildSummaryPrompt, parseSummaryParts, skeletonSummary, summarizeBatch } from './summarize';
+import {
+  buildSummaryPrompt, parseSummaryParts, parseSummarySections, skeletonSummary, summarizeBatch, summarizePairs,
+} from './summarize';
 import type { ProviderAdapter, ProviderConfig, StreamEvent } from '../providers/types';
 
 const cfg: ProviderConfig = { id: 'mock', baseUrl: '', apiKey: '', extraHeaders: {} };
@@ -36,7 +38,7 @@ describe('摘要压缩', () => {
 
   it('提示词带上一批消息、上一条摘要尾巴，并写死「文学描写但保留硬事实」', () => {
     const p = buildSummaryPrompt(
-      [{ role: 'user', content: '我推开门' }, { role: 'assistant', content: '门后是一片黑' }],
+      [[{ role: 'user', content: '我推开门' }, { role: 'assistant', content: '门后是一片黑' }]],
       '上次他们还在楼下',
     );
     expect(p).toContain('我推开门');
@@ -50,14 +52,58 @@ describe('摘要压缩', () => {
     expect(p).toContain('关键事件');
   });
 
-  it('骨架摘要包含条数范围与用户输入片段', () => {
+  it('多对时要求编号输出，并逐段标出「第 N 段」', () => {
+    const p = buildSummaryPrompt([
+      [{ role: 'user', content: 'A1' }, { role: 'assistant', content: 'A2' }],
+      [{ role: 'user', content: 'B1' }, { role: 'assistant', content: 'B2' }],
+    ]);
+    expect(p).toContain('### 1');
+    expect(p).toContain('### 2');
+    expect(p).toContain('第 1 段');
+    expect(p).toContain('第 2 段');
+  });
+
+  it('parseSummarySections 按 ### n 拆成每对一段', () => {
+    const raw = [
+      '### 1', '用户：甲选 A', '叙事：灯灭了。',
+      '### 2', '用户：乙推门', '叙事：门后是黑的。',
+    ].join('\n');
+    const parts = parseSummarySections(raw, 2);
+    expect(parts).toHaveLength(2);
+    expect(parts[0].userText).toBe('甲选 A');
+    expect(parts[1].assistantText).toContain('门后是黑的');
+  });
+
+  it('拆不出编号时整段当第一段，缺的用兜底文案补齐', () => {
+    const parts = parseSummarySections('用户：只有一段\n叙事：内容', 2);
+    expect(parts).toHaveLength(2);
+    expect(parts[0].userText).toBe('只有一段');
+    expect(parts[1].assistantText).toContain('没有生成摘要');
+  });
+
+  it('skeletonSummary 包含条数范围与用户输入片段', () => {
     const p = skeletonSummary([{ role: 'user', content: '我推开门走进走廊' }], 3, 4);
     expect(p.assistantText).toContain('第 3–4 条');
     expect(p.assistantText).toContain('我推开门走进走廊');
     expect(p.userText).toBe('');
   });
 
-  it('summarizeBatch 把 adapter 吐出的文本拼起来并解析', async () => {
+  it('summarizePairs 把 adapter 吐出的文本拼起来并按段解析', async () => {
+    const adapter = fakeAdapter(['### 1\n用户：选了 A', '\n叙事：灯灭了。\n### 2\n用户：选了 B\n叙事：门开了。']);
+    const out = await summarizePairs({
+      adapter, cfg, model: 'm',
+      pairs: [
+        [{ role: 'user', content: 'x' }, { role: 'assistant', content: 'y' }],
+        [{ role: 'user', content: 'p' }, { role: 'assistant', content: 'q' }],
+      ],
+    });
+    expect(out).toHaveLength(2);
+    expect(out[0].userText).toBe('选了 A');
+    expect(out[0].assistantText).toBe('灯灭了。');
+    expect(out[1].userText).toBe('选了 B');
+  });
+
+  it('summarizeBatch（旧接口）等同压一对', async () => {
     const adapter = fakeAdapter(['用户：选了 A', '\n叙事：灯灭了。']);
     const out = await summarizeBatch({
       adapter, cfg, model: 'm',

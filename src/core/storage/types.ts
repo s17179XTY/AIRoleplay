@@ -101,29 +101,39 @@ export const SETTING_CONTEXT_LIMIT = 'contextMessageLimit';
 export const SETTING_SUMMARY_ENABLED = 'summaryEnabled';
 /** 攒够几对掉出窗口才压缩（默认 1） */
 export const SETTING_SUMMARY_BATCH = 'summaryBatchPairs';
+/** 上下文占用达到这个百分比就主动压缩旧对话（默认 90，上限 92） */
+export const SETTING_SUMMARY_TRIGGER = 'summaryTriggerPercent';
 /** 迁移标记：旧记忆条目只清一次 */
 export const SETTING_MEMORY_SCHEMA = 'memorySchema';
 
 export const DEFAULT_CONTEXT_MODE: ContextMode = 'recent';
 export const DEFAULT_CONTEXT_LIMIT = 6;
 export const DEFAULT_SUMMARY_BATCH = 1;
+/** 触发压缩的占用百分比：默认 90，可设 50–92（太贴近 100% 会来不及压） */
+export const DEFAULT_SUMMARY_TRIGGER = 90;
+export const SUMMARY_TRIGGER_MIN = 50;
+export const SUMMARY_TRIGGER_MAX = 92;
+/** 压到大约这个占用就停手（落在 70–80% 区间） */
+export const SUMMARY_TARGET_PERCENT = 75;
+/** 一次最多压几对：太多会让这一轮等很久，压不够下一轮继续 */
+export const SUMMARY_MAX_PAIRS_PER_RUN = 6;
 export const MEMORY_SCHEMA_VERSION = 'summary-v1';
 
 /** 每段摘要的字数上限 */
 export const SUMMARY_MAX_CHARS = 200;
-/** 摘要库最多留几条 */
-export const SUMMARY_KEEP = 20;
+/** 摘要库最多留几条（一对一项 → 上限要放宽，否则很快满库又不停合并） */
+export const SUMMARY_KEEP = 100;
 /** 超出上限时，把最老的几条本地拼接成一条 */
-export const SUMMARY_MERGE_BATCH = 5;
+export const SUMMARY_MERGE_BATCH = 10;
 /** 压缩连续失败几次后退化成本地骨架摘要（宁可粗糙也不能丢） */
 export const SUMMARY_FAIL_LIMIT = 3;
 
 export const DEFAULT_PARAMS: ModelParams = {
   temperature: 1, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0,
-  maxTokens: 16000, contextLength: 1000000, thinkingBudget: 0,
+  maxTokens: 16000, contextLength: 128000, thinkingBudget: 0,
 };
 
 export const DEFAULT_CAPABILITY: ModelCapability = {
   temperature: true, topP: true, presencePenalty: true, frequencyPenalty: true,
-  maxTokens: true, contextLength: 1000000, thinkingBudget: false, prefill: false, systemRole: false,
+  maxTokens: true, contextLength: 128000, thinkingBudget: false, prefill: false, systemRole: false,
 };

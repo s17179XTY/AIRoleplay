@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSession } from '../../state/useSession';
+import { useSession, type ContextPreview } from '../../state/useSession';
 import { useSettingFlag } from '../../state/useSetting';
 import { useData } from '../../state/useData';
 import { useNav } from '../../state/useNav';
@@ -12,7 +12,18 @@ import type { ChatRecord } from '../../core/storage/types';
 import MessageBubble from './MessageBubble';
 import CardPagePanel from './CardPagePanel';
 import Composer from './Composer';
-import ContextHud from './ContextHud';
+
+function formatTokens(n: number): string {
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+}
+
+function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="block w-full px-4 py-2.5 text-left text-slate-700 active:bg-black/5">
+      {label}
+    </button>
+  );
+}
 
 function copyText(text: string): void {
   void navigator.clipboard?.writeText(text).catch(() => undefined);
@@ -28,10 +39,16 @@ export default function PlayScreen() {
   const messages = useSession((s) => s.messages);
   const draft = useSession((s) => s.draft);
   const streaming = useSession((s) => s.streaming);
+  const summarizing = useSession((s) => s.summarizing);
+  const restoreInput = useSession((s) => s.restoreInput);
+  const consumeRestoreInput = useSession((s) => s.consumeRestoreInput);
+  const preview = useSession((s) => s.preview);
+  const modelLabel = useSession((s) => s.modelLabel);
   const error = useSession((s) => s.error);
   const regexRules = useSession((s) => s.regexRules);
   const cardUiHtml = useSession((s) => s.cardUiHtml);
   const memories = useSession((s) => s.memories);
+  const chatId = useSession((s) => s.chatId);
   const init = useSession((s) => s.init);
   const reload = useSession((s) => s.reload);
   const send = useSession((s) => s.send);
@@ -53,7 +70,9 @@ export default function PlayScreen() {
   const modsOn = mods.filter((m) => m.enabled && m.content.trim()).length;
 
   const [pageOpen, setPageOpen] = useState(false);
-  const [sheet, setSheet] = useState<'chats' | 'memory' | 'mods' | null>(null);
+  const [sheet, setSheet] = useState<'chats' | 'memory' | 'mods' | 'context' | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [info, setInfo] = useState<ContextPreview | null>(null);
   const [chats, setChats] = useState<ChatRecord[]>([]);
   const [editingChat, setEditingChat] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState('');
@@ -80,6 +99,15 @@ export default function PlayScreen() {
   useEffect(() => {
     if (dataVersion > 0) void reload();
   }, [dataVersion, reload]);
+
+  // 上下文占用：跑一次本地组装（不发请求），数字与真正发送时同一套
+  const refreshContext = useCallback(async () => {
+    setInfo(await preview());
+  }, [preview]);
+
+  useEffect(() => {
+    void refreshContext();
+  }, [refreshContext, messages.length, draft, memories.length, chatId, dataVersion]);
 
   /**
    * 自動滾動：只有在「使用者還在底部」時才跟。
@@ -120,9 +148,11 @@ export default function PlayScreen() {
     setChats(list.sort((a, b) => b.updatedAt - a.updatedAt));
   }, [cardId]);
 
-  const openSheet = async (kind: 'chats' | 'memory' | 'mods') => {
+  const openSheet = async (kind: 'chats' | 'memory' | 'mods' | 'context') => {
     if (kind === 'chats') await loadChats();
     if (kind === 'mods') setMods(await listMods());
+    if (kind === 'context') setInfo(await preview());
+    setMenuOpen(false);
     setSheet(kind);
   };
 
@@ -142,19 +172,36 @@ export default function PlayScreen() {
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="truncate text-[15px] font-semibold text-slate-800">{cardName || '加载中…'}</div>
-            <ContextHud />
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
+              <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[#34c759]" />
+              <span className="truncate">{modelLabel}</span>
+            </div>
           </div>
-          <div className="flex shrink-0 gap-2">
-            {cardUiHtml && hasMessages && !pageOpen && (
-              <button type="button" className="dsh-chip" onClick={() => setPageOpen(true)}>互动页</button>
+          {/* 四个入口收成一个菜单（使用者要求：按下才显示） */}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              data-testid="play-menu"
+              aria-label="更多"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((v) => !v)}
+              className="dsh-chip h-9 w-9 justify-center p-0 text-[16px] leading-none"
+            >
+              ⋮
+            </button>
+            {menuOpen && (
+              <div
+                className="dsh-float absolute right-0 top-11 z-30 w-44 overflow-hidden rounded-2xl bg-white py-1 text-[13px] shadow-lg"
+                data-testid="play-menu-panel"
+              >
+                {cardUiHtml && hasMessages && !pageOpen && (
+                  <MenuItem label="互动页" onClick={() => { setPageOpen(true); setMenuOpen(false); }} />
+                )}
+                <MenuItem label="对话" onClick={() => void openSheet('chats')} />
+                <MenuItem label={`MOD${modsOn > 0 ? ' · ' + modsOn + ' 开' : ''}`} onClick={() => void openSheet('mods')} />
+                <MenuItem label={`记忆${memories.length > 0 ? ' · ' + memories.length : ''}`} onClick={() => void openSheet('memory')} />
+              </div>
             )}
-            <button type="button" className="dsh-chip" onClick={() => void openSheet('chats')}>对话</button>
-            <button type="button" className="dsh-chip" onClick={() => void openSheet('mods')}>
-              MOD{modsOn > 0 ? ' ' + modsOn : ''}
-            </button>
-            <button type="button" className="dsh-chip" onClick={() => void openSheet('memory')}>
-              记忆{memories.length > 0 ? ' ' + memories.length : ''}
-            </button>
           </div>
         </div>
       </header>
@@ -259,8 +306,13 @@ export default function PlayScreen() {
       <Composer
         disabled={!ready}
         streaming={streaming}
+        summarizing={summarizing}
+        contextPercent={info && info.budget > 0 ? Math.round((info.totalTokens / info.budget) * 100) : 0}
+        restoreText={restoreInput}
+        onConsumeRestore={consumeRestoreInput}
         onSend={(t) => void send(t)}
         onStop={stop}
+        onOpenContext={() => void openSheet('context')}
       />
 
       {sheet && (
@@ -268,10 +320,45 @@ export default function PlayScreen() {
           <div className="dsh-sheet max-h-[70%] overflow-y-auto p-4" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <div className="text-[15px] font-semibold text-slate-800">
-                {sheet === 'chats' ? '对话列表' : sheet === 'mods' ? 'MOD（下一轮立刻生效）' : '记忆库'}
+                {sheet === 'chats' ? '对话列表'
+                  : sheet === 'mods' ? 'MOD（下一轮立刻生效）'
+                    : sheet === 'context' ? '上下文占用'
+                      : '记忆库'}
               </div>
               <button type="button" className="dsh-chip" onClick={() => setSheet(null)}>关闭</button>
             </div>
+
+            {sheet === 'context' && info && (
+              <>
+                {info.rows.map((row) => (
+                  <div key={row.label} className="flex items-center justify-between border-b border-black/5 py-2 text-[12px]">
+                    <span className="text-slate-600">{row.label}</span>
+                    <span className="text-slate-400">{formatTokens(row.tokens)} tok</span>
+                  </div>
+                ))}
+                <div className="mt-2 flex items-center justify-between py-2 text-[12px] font-medium">
+                  <span className="text-slate-700">合计</span>
+                  <span className="text-slate-700">
+                    {formatTokens(info.totalTokens)} / {formatTokens(info.budget)} tok
+                    （{info.budget > 0 ? Math.round((info.totalTokens / info.budget) * 100) : 0}%）
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10">
+                  <div
+                    className="h-full rounded-full bg-[#0072E3]"
+                    style={{ width: `${Math.min(100, info.budget > 0 ? Math.round((info.totalTokens / info.budget) * 100) : 0)}%` }}
+                  />
+                </div>
+                <div className="mt-3 space-y-1 text-[11px] leading-relaxed text-slate-400">
+                  <div>被裁掉：历史 {info.droppedHistory} 条 · 世界书 {info.droppedWorldbook} 条</div>
+                  <div>记忆库：{info.summaryCount} 条摘要</div>
+                  <div>
+                    模式：{info.mode === 'recent' ? `只带最近 ${info.windowLimit} 条消息` : '全部带（按占用阈值主动压缩）'}
+                    （可在设置里改）
+                  </div>
+                </div>
+              </>
+            )}
 
             {sheet === 'chats' && (
               <>

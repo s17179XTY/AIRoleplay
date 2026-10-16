@@ -2,13 +2,14 @@ import { SUMMARY_MAX_CHARS } from '../storage/types';
 import type { ProviderAdapter, ProviderConfig, StreamEvent } from '../providers/types';
 
 /**
- * 把「掉出上下文窗口的交换」压成一段摘要。
+ * 把「掉出上下文窗口的交换」压成摘要。
  *
  * 这个模块**不碰数据库**：只负责组提示词、调一次模型、把输出解析成
- * 「用户」与「叙事」两段。存哪里、什么时候存由 `state/useSession.ts` 决定。
+ * 每对一段的「用户 / 叙事」两段式结果。
  *
- * 为什么一定要分两段：使用者明确交代过 —— 摘要注回上下文时要能分清
- * 「玩家说过什么」和「AI 写过什么」，否则 AI 会把玩家的选择当成自己写的。
+ * 使用者的要求（2026-10-15）：**一对一项摘要**；但一次请求可以压多对
+ * （否则一次要压 6 对就要连发 6 次请求，又慢又容易失败），
+ * 所以提示词要求模型按 `### 1` `### 2` … 编号输出，回来再拆成多项存储。
  */
 
 export interface SummaryPart {
@@ -21,20 +22,32 @@ export interface SummaryMessage {
   content: string;
 }
 
+/** 一个「交换」= 一组消息（通常是一条用户消息 + 它的 AI 回复） */
+export type SummaryPair = SummaryMessage[];
+
 const PREVIOUS_TAIL = 200;
 
-export function buildSummaryPrompt(batch: SummaryMessage[], previousTail?: string): string {
+export function buildSummaryPrompt(pairs: SummaryPair[], previousTail?: string): string {
   const lines: string[] = [];
-  lines.push('你在帮一个角色扮演应用整理长期记忆。把下面这一段对话压缩成一段摘要：');
+  lines.push(`你在帮一个角色扮演应用整理长期记忆。下面有 ${pairs.length} 段对话，请**各自**压成一段摘要。`);
   lines.push('');
+  lines.push('每段都要遵守：');
   lines.push('1. 用叙事性的文学笔法写，保留细节与氛围，不要写成干巴巴的条目列表。');
   lines.push('2. 必须保留：出现的人物与其关系变化、已发生的关键事件、当前时间/地点/身体与情绪状态、');
   lines.push('   任何已经确立的约定或规则。');
-  lines.push('3. 分两部分输出，各自以固定标记开头：');
+  lines.push('3. 分两部分写，各自以固定标记开头：');
   lines.push('   用户：<玩家这一方说过、做过、选择过的事>');
   lines.push('   叙事：<AI 这一方写过的事>');
   lines.push(`4. 每部分不超过 ${SUMMARY_MAX_CHARS} 字。`);
-  lines.push('5. 不要添加原文没有的内容，不要评论，不要输出其它内容。');
+  lines.push('5. 不要添加原文没有的内容，不要评论。');
+  lines.push('');
+  lines.push('输出格式（**必须**照这个编号，一段都不要合并、顺序不要变）：');
+  lines.push('### 1');
+  lines.push('用户：…');
+  lines.push('叙事：…');
+  lines.push('### 2');
+  lines.push('用户：…');
+  lines.push('叙事：…');
   if (previousTail) {
     lines.push('');
     lines.push('（下面是上一段时期已经写好的摘要结尾，仅供衔接语气与时间线，不要重复它）');
@@ -42,9 +55,10 @@ export function buildSummaryPrompt(batch: SummaryMessage[], previousTail?: strin
   }
   lines.push('');
   lines.push('===== 要压缩的对话 =====');
-  for (const m of batch) {
-    lines.push((m.role === 'user' ? '[用户] ' : '[AI] ') + m.content);
-  }
+  pairs.forEach((pair, i) => {
+    lines.push(`----- 第 ${i + 1} 段 -----`);
+    for (const m of pair) lines.push((m.role === 'user' ? '[用户] ' : '[AI] ') + m.content);
+  });
   return lines.join('\n');
 }
 
@@ -53,18 +67,36 @@ function clip(text: string): string {
   return t.length > SUMMARY_MAX_CHARS ? t.slice(0, SUMMARY_MAX_CHARS) : t;
 }
 
-export function parseSummaryParts(raw: string): SummaryPart {
-  const text = raw.trim();
-  const userMatch = text.match(/用户\s*[:：]\s*([\s\S]*?)(?=\n\s*叙事\s*[:：]|$)/);
-  const narrativeMatch = text.match(/叙事\s*[:：]\s*([\s\S]*)$/);
+function parseOne(text: string): SummaryPart {
+  const body = text.trim();
+  const userMatch = body.match(/用户\s*[:：]\s*([\s\S]*?)(?=\n\s*叙事\s*[:：]|$)/);
+  const narrativeMatch = body.match(/叙事\s*[:：]\s*([\s\S]*)$/);
   if (narrativeMatch) {
-    return {
-      userText: clip(userMatch?.[1] ?? ''),
-      assistantText: clip(narrativeMatch[1]),
-    };
+    return { userText: clip(userMatch?.[1] ?? ''), assistantText: clip(narrativeMatch[1]) };
   }
   // 模型没按标记输出：整段当叙事，userText 留空（上层会标记「格式未识别」）
-  return { userText: '', assistantText: clip(text) };
+  return { userText: '', assistantText: clip(body) };
+}
+
+/** 解析单段（旧接口，保留给测试与兜底路径） */
+export function parseSummaryParts(raw: string): SummaryPart {
+  return parseOne(raw);
+}
+
+/**
+ * 解析成「每对一段」。按 `### n` 切；切不出来时退化成「整段当第一段」，
+ * 剩下的段落用兜底文案补齐（宁可粗糙也不能丢）。
+ */
+export function parseSummarySections(raw: string, count: number): SummaryPart[] {
+  const text = raw.trim();
+  const marked = text.split(/^\s*#{2,4}\s*\d+\s*$/m).map((s) => s.trim()).filter(Boolean);
+  const sections = marked.length >= 1 && /用户\s*[:：]|叙事\s*[:：]/.test(text) ? marked : [text];
+  const out: SummaryPart[] = [];
+  for (let i = 0; i < count; i += 1) {
+    if (i < sections.length && sections[i]) out.push(parseOne(sections[i]));
+    else out.push({ userText: '', assistantText: '（这一段没有生成摘要，原文已按窗口规则出栈）' });
+  }
+  return out;
 }
 
 /** 连续失败多次后的兜底：不调模型，至少把「哪一段、用户当时说了什么」记下来 */
@@ -78,23 +110,24 @@ export function skeletonSummary(batch: SummaryMessage[], fromIndex: number, toIn
   };
 }
 
-export async function summarizeBatch(input: {
+/** 调一次模型压一批（每对一段），回传与传入顺序一一对应的结果 */
+export async function summarizePairs(input: {
   adapter: ProviderAdapter;
   cfg: ProviderConfig;
   model: string;
-  batch: SummaryMessage[];
+  pairs: SummaryPair[];
   previousTail?: string;
   signal?: AbortSignal;
-}): Promise<SummaryPart> {
-  const { adapter, cfg, model, batch, previousTail, signal } = input;
-  const prompt = buildSummaryPrompt(batch, previousTail);
+}): Promise<SummaryPart[]> {
+  const { adapter, cfg, model, pairs, previousTail, signal } = input;
+  const prompt = buildSummaryPrompt(pairs, previousTail);
 
   let acc = '';
   let failure: string | null = null;
   for await (const ev of adapter.streamChat(cfg, {
     model,
     messages: [{ role: 'user', content: prompt, position: 'post' }],
-    params: { temperature: 0.3, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0, maxTokens: 800, contextLength: 32000, thinkingBudget: 0 },
+    params: { temperature: 0.3, topP: 0.95, presencePenalty: 0, frequencyPenalty: 0, maxTokens: 1200, contextLength: 32000, thinkingBudget: 0 },
     capabilities: {
       temperature: true, topP: true, presencePenalty: false, frequencyPenalty: false,
       maxTokens: true, contextLength: 32000, thinkingBudget: false, prefill: false, systemRole: false,
@@ -107,5 +140,18 @@ export async function summarizeBatch(input: {
 
   if (failure) throw new Error(failure);
   if (!acc.trim()) throw new Error('摘要模型没有返回内容');
-  return parseSummaryParts(acc);
+  return parseSummarySections(acc, pairs.length);
+}
+
+/** @deprecated 旧的一次压一批（不分段）接口，测试仍在用 */
+export async function summarizeBatch(input: {
+  adapter: ProviderAdapter;
+  cfg: ProviderConfig;
+  model: string;
+  batch: SummaryMessage[];
+  previousTail?: string;
+  signal?: AbortSignal;
+}): Promise<SummaryPart> {
+  const [first] = await summarizePairs({ ...input, pairs: [input.batch] });
+  return first;
 }

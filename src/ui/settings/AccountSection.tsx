@@ -189,7 +189,7 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
           <div className="dsh-card space-y-3 p-3.5">
             <div className="text-[13px] font-medium text-slate-700">这台装置和云端都有资料</div>
             <div className="rounded-xl bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-700">
-              本机有 {pendingChoice?.localRows ?? '若干'} 笔内容，云端已用
+              本机有 {pendingChoice?.localRows ?? '若干'} 笔还没推上去的改动，云端已用
               {' '}{formatBytes(pendingChoice?.cloudBytes ?? 0)}。
               两边内容不一样，需要你决定保留哪一边（这一步不能自动猜）。
             </div>
@@ -208,6 +208,13 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
               onClick={() => void run(() => useSync.getState().resolveConflictChoice('local', seams))}
             >
               以本机为准（会覆盖云端）
+            </button>
+            <button
+              type="button"
+              className="w-full py-2 text-[12px] text-slate-400 underline"
+              onClick={() => useSync.setState({ status: 'idle', pendingChoice: null, message: null })}
+            >
+              先不同步
             </button>
             <div className="text-[11px] leading-relaxed text-slate-400">
               「以本机为准」会先给本机拍一份快照，再拉一遍云端（拿到版本号），最后用快照盖回去并推上去 ——
@@ -258,7 +265,7 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
 
             <div className="flex gap-2">
               <button type="button" disabled={busy} className="dsh-btn flex-1 py-2.5 text-[13px]"
-                onClick={() => void run(() => useSync.getState().runSync(seams))}>
+                onClick={() => void run(() => useSync.getState().runSync(seams, { askIfBothSides: true }))}>
                 {busy ? '同步中…' : '立即同步'}
               </button>
               <button type="button" className="rounded-xl border border-black/10 px-4 py-2 text-[13px] text-slate-500"

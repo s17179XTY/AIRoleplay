@@ -42,9 +42,11 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'worker/**/*.test.ts'],
     /**
      * Windows 上 tinypool 的 worker 收尾偶发 `ERR_IPC_CHANNEL_CLOSED`
-     * （所有用例都过了，却把退出码拖成 1）——用 forks 池就没这个问题。
+     * （所有用例都过了，却把退出码拖成 1）。用 forks 池 + 单进程跑就没这个问题。
      * 这是环境问题不是测试问题，但「test 必须全绿」是硬规矩，所以从源头避开。
      */
     pool: 'forks',
+    fileParallelism: false,
+    poolOptions: { forks: { singleFork: true } },
   },
 });

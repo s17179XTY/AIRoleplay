@@ -26,7 +26,8 @@ textarea::-webkit-scrollbar { display: none; }
 body {
   margin: 0;
   overflow: hidden;
-  background: var(--dsh-bg);
+  /* 状态栏那一条显示的是页面底色：跟顶栏一样留白，否则会比下面灰一截 */
+  background: #ffffff;
   color: var(--dsh-ink);
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -43,7 +44,7 @@ body {
   height: 100dvh;
   overflow: hidden;
   position: relative;
-  background: var(--dsh-bg);
+  background: #ffffff;
 }
 
 /*
@@ -179,6 +180,8 @@ body {
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--dsh-line);
 }
+/* 顶栏要伸进状态栏底下（不然刘海那一条会是页面底色，比顶栏灰） */
+.dsh-header { padding-top: calc(env(safe-area-inset-top) + 0.875rem); }
 .dsh-tabbar {
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(14px);

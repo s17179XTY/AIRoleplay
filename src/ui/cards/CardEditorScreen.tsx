@@ -110,7 +110,21 @@ export default function CardEditorScreen({ cardId }: { cardId: string | null }) 
       <main className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {section === 'basic' && (
           <>
-            <ImageSlots pkg={base} onChange={setBase} />
+            {/*
+              图片必须**同时写进 base 与 draft.json**：
+              保存时用的是 draftToPackage(draft, base)，而 draft.json 是打开编辑器那一刻的快照。
+              只改 base 的话，`cover` / `avatar` 这两个字段根本不会进 card.json ——
+              图存进库了但没人引用它，看起来就是「上传了却没生效」。
+            */}
+            <ImageSlots
+              pkg={base}
+              onChange={(next) => {
+                setBase(next);
+                setDraft((d) => (d
+                  ? { ...d, json: { ...d.json, cover: next.json.cover, avatar: next.json.avatar } }
+                  : d));
+              }}
+            />
             <Field label="卡片名">
               <input className={inputClass} value={draft.json.name}
                 onChange={(e) => patchJson({ name: e.target.value })} />
@@ -119,7 +133,7 @@ export default function CardEditorScreen({ cardId }: { cardId: string | null }) 
               <input className={inputClass} value={draft.json.author}
                 onChange={(e) => patchJson({ author: e.target.value })} />
             </Field>
-            <Field label="简介（只在卡片列表显示，不会进提示词）">
+            <Field label="简介">
               <textarea className={inputClass} rows={3} value={draft.json.description}
                 onChange={(e) => patchJson({ description: e.target.value })} />
             </Field>

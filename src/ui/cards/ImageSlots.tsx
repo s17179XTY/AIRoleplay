@@ -44,52 +44,77 @@ export default function ImageSlots({ pkg, onChange }: {
     }
   };
 
-  const current = (slot: 'cover' | 'avatar') => {
-    const path = slot === 'cover' ? (pkg.json.cover ?? 'assets/cover.png') : 'assets/avatar.png';
-    return pkg.assets.find((a) => a.path === path);
-  };
+  const cover = pkg.assets.find((a) => a.path === (pkg.json.cover ?? 'assets/cover.png'));
+  const avatarAsset = pkg.assets.find((a) => a.path === (pkg.json.avatar ?? 'assets/avatar.png'));
 
   return (
     <div className="dsh-card p-3.5">
-      <div className="mb-2 text-[12px] text-slate-500">图片（封面显示在卡片列表，头像显示在聊天气泡旁边）</div>
-      <div className="flex gap-4">
-        {(['cover', 'avatar'] as const).map((slot) => {
-          const asset = current(slot);
-          const ref = slot === 'cover' ? coverRef : avatarRef;
-          return (
-            <div key={slot} className="flex flex-col items-center gap-1.5">
-              <div
-                className={
-                  'flex items-center justify-center overflow-hidden bg-black/5 text-[10px] text-slate-400 ' +
-                  (slot === 'cover' ? 'h-20 w-20 rounded-2xl' : 'h-10 w-10 rounded-full')
-                }
-              >
-                {asset ? <Preview asset={asset} /> : (slot === 'cover' ? '无封面' : '无头像')}
-              </div>
-              <button
-                type="button"
-                data-testid={`upload-${slot}`}
-                disabled={!canUpload}
-                onClick={() => ref.current?.click()}
-                className="dsh-chip text-[11px] disabled:opacity-40"
-              >
-                {asset ? '更换' : '上传'}
-              </button>
-              <input
-                ref={ref}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (file) void pick(file, slot);
-                }}
-              />
-            </div>
-          );
-        })}
+      <div className="mb-2.5 text-[12px] text-slate-500">卡片图片</div>
+
+      {/* 封面：整行的大图，像一张卡 */}
+      <div className="relative overflow-hidden rounded-2xl bg-black/5" style={{ aspectRatio: '16 / 10' }}>
+        {cover ? (
+          <Preview asset={cover} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-[12px] text-slate-400">还没有封面</div>
+        )}
+        <button
+          type="button"
+          data-testid="upload-cover"
+          disabled={!canUpload}
+          onClick={() => coverRef.current?.click()}
+          className="absolute bottom-2 right-2 rounded-full bg-[rgba(20,24,33,0.72)] px-3.5 py-1.5 text-[12px] text-white backdrop-blur disabled:opacity-40"
+        >
+          {cover ? '更换封面' : '上传封面'}
+        </button>
       </div>
+
+      {/* 头像：小圆 */}
+      <div className="mt-3 flex items-center gap-3">
+        <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-black/5">
+          {avatarAsset ? (
+            <Preview asset={avatarAsset} className="h-full w-full object-cover" />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-400">无</div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 text-[11px] leading-relaxed text-slate-400">
+          头像显示在聊天气泡旁边
+        </div>
+        <button
+          type="button"
+          data-testid="upload-avatar"
+          disabled={!canUpload}
+          onClick={() => avatarRef.current?.click()}
+          className="dsh-chip shrink-0 text-[11px] disabled:opacity-40"
+        >
+          {avatarAsset ? '更换' : '上传'}
+        </button>
+      </div>
+
+      <input
+        ref={coverRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void pick(file, 'cover');
+        }}
+      />
+      <input
+        ref={avatarRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void pick(file, 'avatar');
+        }}
+      />
+
       {!canUpload && (
         <div className="mt-2 text-[11px] text-slate-400">
           登录后才能上传图片（已有的图片照常显示）。
@@ -99,9 +124,9 @@ export default function ImageSlots({ pkg, onChange }: {
   );
 }
 
-function Preview({ asset }: { asset: { mime: string; bytes: Uint8Array } }) {
+function Preview({ asset, className }: { asset: { mime: string; bytes: Uint8Array }; className?: string }) {
   const url = useObjectUrl(asset);
-  return url ? <img src={url} alt="" className="h-full w-full object-cover" /> : null;
+  return url ? <img src={url} alt="" className={className} /> : null;
 }
 
 function useObjectUrl(asset: { mime: string; bytes: Uint8Array }): string | null {

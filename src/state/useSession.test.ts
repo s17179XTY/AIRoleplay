@@ -158,7 +158,7 @@ describe('会话 store', () => {
     expect(s.messages[1].status).toBe('incomplete');
   });
 
-  it('stop() 在第一個字之前：不留空的助理訊息', async () => {
+  it('stop() 在第一個字之前：撤回那条使用者訊息，并把文字放回输入框（保持严格一对）', async () => {
     setAdapter(hangingAdapter(''));
     await useSession.getState().init();
     const pending = useSession.getState().send('第一句');
@@ -170,10 +170,12 @@ describe('会话 store', () => {
     const s = useSession.getState();
     expect(s.streaming).toBe(false);
     expect(s.error).toBeNull();
-    expect(s.messages).toHaveLength(1); // 只剩使用者那一則
-    expect(s.messages[0].role).toBe('user');
+    // 世界线回到发送前：不留一条没人回覆的使用者讯息（否则下一次发送就变成两条用户讯息连着）
+    expect(s.messages).toHaveLength(0);
+    // 文字放回输入框，让人改完再发
+    expect(s.restoreInput).toBe('第一句');
     const stored = await db.messages.where('chatId').equals(s.chatId!).toArray();
-    expect(stored).toHaveLength(1);
+    expect(stored).toHaveLength(0);
   });
 
   /**

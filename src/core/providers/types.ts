@@ -36,5 +36,6 @@ export interface ProviderAdapter {
 }
 export const MOCK_CAPABILITY: ModelCapability = {
   temperature: true, topP: true, presencePenalty: true, frequencyPenalty: true,
-  maxTokens: true, contextLength: 1000000, thinkingBudget: false, prefill: false, systemRole: false,
+  // 默认给一个真实模型量级的窗口（以前是 100 万，导致 HUD 的占用百分比永远是 0%）
+  maxTokens: true, contextLength: 128000, thinkingBudget: false, prefill: false, systemRole: false,
 };

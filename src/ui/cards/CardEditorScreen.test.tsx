@@ -90,7 +90,7 @@ describe('卡片编辑器', () => {
     expect(screen.queryByText('主人公设定')).toBeNull();
     expect(screen.queryByText('前情提要')).toBeNull();
     expect(screen.queryByText(/开场白/)).toBeNull();
-    // 简介还在，而且说明改成「不会进提示词」
-    expect(screen.getByText(/简介（只在卡片列表显示，不会进提示词）/)).toBeTruthy();
+    // 简介还在，标签就是「简介」两个字（使用者要求删掉那句废话）
+    expect(screen.getByText('简介')).toBeTruthy();
   });
 });

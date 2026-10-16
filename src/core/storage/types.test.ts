@@ -4,7 +4,8 @@ import {
   DEFAULT_CONTEXT_LIMIT, DEFAULT_CONTEXT_MODE, DEFAULT_SUMMARY_BATCH,
   MEMORY_SCHEMA_VERSION, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE,
   SETTING_MEMORY_SCHEMA, SETTING_SUMMARY_BATCH, SETTING_SUMMARY_ENABLED,
-  SUMMARY_KEEP, SUMMARY_MAX_CHARS, SUMMARY_MERGE_BATCH,
+  SUMMARY_KEEP, SUMMARY_MAX_CHARS, SUMMARY_MAX_PAIRS_PER_RUN, SUMMARY_MERGE_BATCH,
+  SUMMARY_TARGET_PERCENT, SUMMARY_TRIGGER_MAX, SUMMARY_TRIGGER_MIN, DEFAULT_SUMMARY_TRIGGER,
   type MemoryRecord, type ModRecord,
 } from './types';
 
@@ -18,8 +19,15 @@ describe('摘要库与上下文设置的类型/常量', () => {
     expect(DEFAULT_CONTEXT_LIMIT).toBe(6);
     expect(DEFAULT_SUMMARY_BATCH).toBe(1);
     expect(SUMMARY_MAX_CHARS).toBe(200);
-    expect(SUMMARY_KEEP).toBe(20);
-    expect(SUMMARY_MERGE_BATCH).toBe(5);
+    // 一对一项摘要之后条数涨得快，上限放宽到 100（否则很快满库又不停合并）
+    expect(SUMMARY_KEEP).toBe(100);
+    expect(SUMMARY_MERGE_BATCH).toBe(10);
+    // 阈值压缩：默认 90%，可设 50–92（太贴近 100% 会来不及压）
+    expect(DEFAULT_SUMMARY_TRIGGER).toBe(90);
+    expect(SUMMARY_TRIGGER_MIN).toBe(50);
+    expect(SUMMARY_TRIGGER_MAX).toBe(92);
+    expect(SUMMARY_TARGET_PERCENT).toBe(75);
+    expect(SUMMARY_MAX_PAIRS_PER_RUN).toBe(6);
     expect(MEMORY_SCHEMA_VERSION).toBe('summary-v1');
     expect(SETTING_CONTEXT_MODE).toBe('contextMode');
     expect(SETTING_CONTEXT_LIMIT).toBe('contextMessageLimit');

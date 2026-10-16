@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { db } from '../../core/storage/db';
 import type { ModelCapability, ModelParams, ModelPresetRecord, ProviderRecord, RegexScriptRecord } from '../../core/storage/types';
-import { DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_PARAMS, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE, type ContextMode } from '../../core/storage/types';
+import { DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_PARAMS, DEFAULT_SUMMARY_TRIGGER, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE, SETTING_SUMMARY_TRIGGER, SUMMARY_MAX_PAIRS_PER_RUN, SUMMARY_TARGET_PERCENT, SUMMARY_TRIGGER_MAX, SUMMARY_TRIGGER_MIN, type ContextMode } from '../../core/storage/types';
 import {
   deletePreset, deleteProvider, getActive, listPresets, listProviders,
   savePreset, saveProvider, setActive, testConnection,
@@ -72,6 +72,7 @@ export default function SettingsScreen() {
   const formTouchedRef = useRef(false);
   const [summaryOn, setSummaryOn] = useSettingFlag('summaryEnabled', true);
   const [summaryBatch, setSummaryBatch] = useState('1');
+  const [summaryTrigger, setSummaryTrigger] = useState(String(DEFAULT_SUMMARY_TRIGGER));
   const showToast = useNav((s) => s.showToast);
   const reloadCard = useSession((s) => s.reloadCard);
   const reloadSession = useSession((s) => s.reload);
@@ -89,14 +90,16 @@ export default function SettingsScreen() {
     setActiveProviderId(active?.provider.id ?? null);
     setActivePresetId(active?.preset.id ?? null);
     const cfg = await db.configs.where('scope').equals('global').first();
-    const [modeRow, limitRow, batchRow] = await Promise.all([
+    const [modeRow, limitRow, batchRow, triggerRow] = await Promise.all([
       db.settings.get(SETTING_CONTEXT_MODE).catch(() => undefined),
       db.settings.get(SETTING_CONTEXT_LIMIT).catch(() => undefined),
       db.settings.get('summaryBatchPairs').catch(() => undefined),
+      db.settings.get(SETTING_SUMMARY_TRIGGER).catch(() => undefined),
     ]);
     if (!formTouchedRef.current) {
       setContextMode(modeRow?.value === 'all' ? 'all' : 'recent');
       setSummaryBatch(String(batchRow?.value ?? '1'));
+      setSummaryTrigger(String(triggerRow?.value ?? DEFAULT_SUMMARY_TRIGGER));
       setGlobalConfig({
         // 沒有設定列時顯示預設值，而不是 0——那個 0 就是使用者抱怨「刪掉又自己彈回來」的元凶
         contextLimit: String(limitRow?.value ?? DEFAULT_CONTEXT_LIMIT_TEXT),
@@ -166,10 +169,16 @@ export default function SettingsScreen() {
     setContextLimitError(null);
     const batchNum = Number(summaryBatch.trim());
     const batch = Number.isInteger(batchNum) && batchNum >= 1 && batchNum <= 5 ? batchNum : 1;
+    const triggerNum = Number(summaryTrigger.trim());
+    const trigger = Number.isInteger(triggerNum) && triggerNum >= SUMMARY_TRIGGER_MIN && triggerNum <= SUMMARY_TRIGGER_MAX
+      ? triggerNum
+      : DEFAULT_SUMMARY_TRIGGER;
     await db.settings.put({ key: SETTING_CONTEXT_MODE, value: contextMode });
     await db.settings.put({ key: SETTING_CONTEXT_LIMIT, value: String(Number.isFinite(limit) && limit >= 1 ? limit : DEFAULT_CONTEXT_LIMIT) });
     await db.settings.put({ key: 'summaryBatchPairs', value: String(batch) });
+    await db.settings.put({ key: SETTING_SUMMARY_TRIGGER, value: String(trigger) });
     setSummaryBatch(String(batch));
+    setSummaryTrigger(String(trigger));
     const existing = await db.configs.where('scope').equals('global').first();
     await db.configs.put({
       id: existing?.id ?? 'global-config',
@@ -529,18 +538,39 @@ export default function SettingsScreen() {
                 关掉后：窗口外的内容不再记录（长对话会失忆）。
               </div>
               {summaryOn && (
-                <label className="mt-2 block">
-                  <div className="mb-1 text-[11px] text-slate-500">攒够几对再压缩（1 = 一掉出就压，调大更省钱）</div>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    aria-label="攒够几对再压缩"
-                    className={inputClass}
-                    value={summaryBatch}
-                    placeholder="1"
-                    onChange={(e) => setSummaryBatch(e.target.value)}
-                  />
-                </label>
+                <>
+                  <label className="mt-2 block">
+                    <div className="mb-1 text-[11px] text-slate-500">
+                      上下文占用达到多少 % 就自动压缩旧对话（默认 {DEFAULT_SUMMARY_TRIGGER}，最高 {SUMMARY_TRIGGER_MAX}）
+                    </div>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      aria-label="压缩触发阈值"
+                      className={inputClass}
+                      value={summaryTrigger}
+                      placeholder={String(DEFAULT_SUMMARY_TRIGGER)}
+                      onChange={(e) => { formTouchedRef.current = true; setSummaryTrigger(e.target.value); }}
+                    />
+                    <div className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                      达到阈值就从最老的对话开始压，压到大约 {SUMMARY_TARGET_PERCENT}% 就停手；
+                      一次最多 {SUMMARY_MAX_PAIRS_PER_RUN} 对，不够下一轮继续。
+                      「只带最近 N 条」模式另有规则：掉出窗口的对话一定会被压（否则直接丢失）。
+                    </div>
+                  </label>
+                  <label className="mt-2 block">
+                    <div className="mb-1 text-[11px] text-slate-500">攒够几对再压缩（1 = 一掉出就压，调大更省钱）</div>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      aria-label="攒够几对再压缩"
+                      className={inputClass}
+                      value={summaryBatch}
+                      placeholder="1"
+                      onChange={(e) => { formTouchedRef.current = true; setSummaryBatch(e.target.value); }}
+                    />
+                  </label>
+                </>
               )}
             </div>
             <label className="block">

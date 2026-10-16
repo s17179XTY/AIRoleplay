@@ -11,8 +11,8 @@
 export const ALLOWED_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
 export type AllowedImageMime = (typeof ALLOWED_IMAGE_MIMES)[number];
 
-/** 原文件体积上限（压缩前） */
-export const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+/** 原文件体积上限（压缩前）。手机照片动辄 3–8 MB，卡太小会让人以为「上传不了」 */
+export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 /** 最长边上限（防解压炸弹） */
 export const IMAGE_MAX_EDGE = 4096;
 /** 压缩后的目标边长 */
@@ -41,7 +41,7 @@ export function isSvgLike(bytes: Uint8Array): boolean {
 export function assertUploadableImage(bytes: Uint8Array): AllowedImageMime {
   if (bytes.byteLength === 0) throw new Error('这个文件是空的');
   if (bytes.byteLength > IMAGE_MAX_BYTES) {
-    throw new Error(`图片太大了（${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB），请压到 2 MB 以内`);
+    throw new Error(`图片太大了（${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB），请压到 10 MB 以内`);
   }
   if (isSvgLike(bytes)) throw new Error('不支持 SVG（它可以带脚本），请用 PNG / JPEG / WebP / GIF');
   const mime = sniffImageMime(bytes);

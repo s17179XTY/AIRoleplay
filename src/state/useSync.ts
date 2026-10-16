@@ -49,7 +49,7 @@ export interface SyncActions {
   login(input: { username: string; password: string } & SyncSeams): Promise<void>;
   unlock(password: string, seams?: SyncSeams): Promise<void>;
   logout(): Promise<void>;
-  runSync(seams?: SyncSeams): Promise<void>;
+  runSync(seams?: SyncSeams, opts?: { askIfBothSides?: boolean }): Promise<void>;
   loadDevices(seams?: SyncSeams): Promise<void>;
   revokeDevice(id: string, seams?: SyncSeams): Promise<void>;
   dismissConflicts(): Promise<void>;
@@ -336,9 +336,35 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     bumpData('account-deleted');
   },
 
-  async runSync(seams = {}) {
+  async runSync(seams = {}, opts = {}) {
     const username = get().username;
     if (!username || !currentDek) return;
+
+    /*
+     * 手動按「立即同步」時先問一次（使用者要求：同步時詢問，不要常駐按鈕）。
+     * 只在**本地真的有東西要推**（outbox 非空）而且**雲端也有資料**時才問 ——
+     * 沒有東西要推的日常同步沒什麼好取捨的，不打擾。
+     */
+    if (opts.askIfBothSides) {
+      const pending = await pendingCount();
+      if (pending > 0) {
+        try {
+          const client = makeClient(seams);
+          const me = await client.me();
+          if (me.quota.used > 0) {
+            set({
+              status: 'needs-choice',
+              pendingChoice: { localRows: pending, cloudBytes: me.quota.used },
+              message: '本地有还没推上去的改动，云端也有资料 —— 请选择要保留哪一边',
+            });
+            return;
+          }
+        } catch {
+          // 连不上就先按正常流程走，让下面那段给出错误讯息
+        }
+      }
+    }
+
     set({ status: 'syncing', message: null });
     try {
       const client = makeClient(seams);

@@ -112,17 +112,34 @@ describe('游玩页', () => {
     expect(useSession.getState().error).toBeNull();
   });
 
-  it('顶栏显示上下文占用（HUD），点开能看到分项明细', async () => {
+  it('顶栏只显示模型；上下文占用是输入框旁边的图标按钮，点开才看明细', async () => {
     render(<PlayScreen />);
     await waitFor(() => expect(useSession.getState().ready).toBe(true));
-    await waitFor(() => expect(screen.getByTestId('context-hud')).toBeTruthy());
-    expect(screen.getByTestId('context-hud').textContent).toContain('上下文');
-    expect(screen.getByTestId('context-hud').textContent).toContain('tok');
 
-    fireEvent.click(screen.getByTestId('context-hud'));
+    // 顶栏不再塞上下文文字（以前会被挤到「文字被吞」）
+    expect(screen.queryByTestId('context-hud')).toBeNull();
+    expect(screen.getByText('mock 模拟模型')).toBeTruthy();
+
+    // 图标按钮在输入框和发送键中间
+    await waitFor(() => expect(screen.getByTestId('context-button')).toBeTruthy());
+    const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
+    const btn = screen.getByTestId('context-button');
+    expect(box.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('context-button').textContent).toMatch(/^\d+$/);
+
+    fireEvent.click(screen.getByTestId('context-button'));
     await waitFor(() => expect(screen.getByText('上下文占用')).toBeTruthy());
     expect(screen.getByText('系统提示词')).toBeTruthy();
     expect(screen.getByText('合计')).toBeTruthy();
+  });
+
+  it('四个入口收成一个菜单，按下才显示', async () => {
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    expect(screen.queryByTestId('play-menu-panel')).toBeNull();
+    fireEvent.click(screen.getByTestId('play-menu'));
+    await waitFor(() => expect(screen.getByTestId('play-menu-panel')).toBeTruthy());
+    expect(screen.getByTestId('play-menu-panel').textContent).toContain('记忆');
   });
 
   it('往上滑之后出现的是「回到顶部 / 回到底部」两个图标按钮（不是文字）', async () => {
@@ -150,9 +167,29 @@ describe('游玩页', () => {
   it('对话列表用右侧图标按钮：改名与删除都不再占一行', async () => {
     render(<PlayScreen />);
     await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    // 入口收进菜单里了，先进菜单再点「对话」
+    fireEvent.click(screen.getByTestId('play-menu'));
+    await waitFor(() => expect(screen.getByTestId('play-menu-panel')).toBeTruthy());
     fireEvent.click(screen.getByText('对话'));
     await waitFor(() => expect(screen.getByText('对话列表')).toBeTruthy());
     await waitFor(() => expect(screen.getAllByLabelText(/^改名/).length).toBeGreaterThan(0));
     expect(screen.getAllByLabelText(/^删除/).length).toBeGreaterThan(0);
+  });
+
+  it('生成期间输入框与发送键一起锁住，只留「停止」', async () => {
+    setAdapter(hangingAdapter(''));
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+
+    const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
+    fireEvent.change(box, { target: { value: '你好' } });
+    fireEvent.click(screen.getByText('发送'));
+    await waitFor(() => expect(useSession.getState().streaming).toBe(true));
+
+    // 严格一对：生成中不能打字、也不能再发一条
+    await waitFor(() => expect(screen.getByPlaceholderText('AI 正在回复…').hasAttribute('disabled')).toBe(true));
+    expect(screen.queryByText('发送')).toBeNull();
+    fireEvent.click(screen.getByTestId('composer-stop'));
+    await waitFor(() => expect(useSession.getState().streaming).toBe(false));
   });
 });

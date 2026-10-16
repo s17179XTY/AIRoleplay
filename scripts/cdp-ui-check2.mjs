@@ -68,24 +68,61 @@ logs.length = 0;
 
 const report = {};
 
-// 1) 上下文 HUD
-report.hud = await evaluate(`(() => {
-  const el = document.querySelector('[data-testid="context-hud"]');
-  return { exists: Boolean(el), text: el ? el.innerText.replace(/\\s+/g, ' ') : '' };
+// 0) 状态栏配色 / 底部导航尺寸 / 顶栏只留模型
+report.chrome = await evaluate(`(() => {
+  const body = getComputedStyle(document.body).backgroundColor;
+  const nav = document.querySelector('nav');
+  const navBtn = nav ? nav.querySelector('button') : null;
+  const header = document.querySelector('header');
+  return {
+    bodyBg: body,
+    navButtonHeight: navBtn ? Math.round(navBtn.getBoundingClientRect().height) : 0,
+    headerHasContextText: header ? header.innerText.includes('上下文') : false,
+    headerText: header ? header.innerText.replace(/\\s+/g, ' ').slice(0, 60) : '',
+  };
 })()`);
-await evaluate(`document.querySelector('[data-testid="context-hud"]').click()`);
-await sleep(400);
+
+// 1) 上下文占用：输入框旁边的图标按钮（像 codex），按下才看明细
+report.hud = await evaluate(`(() => {
+  const btn = document.querySelector('[data-testid="context-button"]');
+  const box = document.querySelector('textarea');
+  if (!btn || !box) return { exists: false };
+  const b = box.getBoundingClientRect();
+  const r = btn.getBoundingClientRect();
+  return {
+    exists: true,
+    betweenInputAndSend: r.left >= b.right - 1,
+    ringText: btn.innerText.trim(),
+  };
+})()`);
+await evaluate(`document.querySelector('[data-testid="context-button"]').click()`);
+await sleep(500);
 report.hudDetail = await evaluate(`(() => {
   const t = document.body.innerText;
   return {
     title: t.includes('上下文占用'),
     system: t.includes('系统提示词'),
     total: t.includes('合计'),
-    hasTokenBudget: /\\/\\s*[\\d.]+k? tok/.test(t),
+    hasPercent: /\\d+%/.test(t),
   };
 })()`);
-await shot('u2-hud');
+await shot('u3-hud');
 await clickText('关闭');
+await sleep(300);
+
+// 1b) 顶栏四个入口收成一个菜单
+report.menu = await evaluate(`(() => {
+  const before = Boolean(document.querySelector('[data-testid="play-menu-panel"]'));
+  document.querySelector('[data-testid="play-menu"]').click();
+  return { closedBefore: !before };
+})()`);
+await sleep(400);
+report.menu.items = await evaluate(`(() => {
+  const p = document.querySelector('[data-testid="play-menu-panel"]');
+  return p ? p.innerText.replace(/\\s+/g, ' ').trim() : '';
+})()`);
+await shot('u3-menu');
+await evaluate(`document.querySelector('[data-testid="play-menu"]').click()`);
 await sleep(300);
 
 // 2) 改設定：只帶最近 4 條，然後聊 4 輪，看摘要庫
@@ -103,6 +140,8 @@ report.settings = await evaluate(`(() => {
     modeAll: t.includes('全部带'),
     contextLimit: Boolean(document.querySelector('[aria-label="上下文条数"]')),
     summaryToggle: Boolean(document.querySelector('[aria-label="记忆托管开关"]')),
+    triggerField: Boolean(document.querySelector('[aria-label="压缩触发阈值"]')),
+    triggerHint: t.includes('压缩旧对话'),
     modSection: t.includes('MOD（热插拔提示词）'),
   };
 })()`);
@@ -150,18 +189,26 @@ for (let i = 1; i <= 4; i += 1) {
   await clickText('发送');
   await sleep(2600);
 }
+const openViaMenu = async (label) => {
+  await evaluate(`document.querySelector('[data-testid="play-menu"]').click()`);
+  await sleep(300);
+  await evaluate(`(() => {
+    const p = document.querySelector('[data-testid="play-menu-panel"]');
+    const item = [...p.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)}));
+    item.click();
+    return true;
+  })()`);
+  await sleep(600);
+};
+
 report.afterChat = await evaluate(`(() => {
-  const hud = document.querySelector('[data-testid="context-hud"]');
-  return { hud: hud ? hud.innerText.replace(/\\s+/g, ' ') : '', hasMemoryChip: document.body.innerText.includes('记忆') };
+  const btn = document.querySelector('[data-testid="context-button"]');
+  const ring = btn ? btn.innerText.trim() : '';
+  return { ring, ringIsNumber: /^\\d+$/.test(ring), hasMemoryChip: document.body.innerText.includes('记忆') };
 })()`);
 
 // 打開記憶庫看摘要
-await evaluate(`(() => {
-  const chip = [...document.querySelectorAll('header button')].find((b) => b.textContent.includes('记忆'));
-  chip.click();
-  return true;
-})()`);
-await sleep(600);
+await openViaMenu('记忆');
 report.memorySheet = await evaluate(`(() => {
   const t = document.body.innerText;
   return {
@@ -174,13 +221,9 @@ await shot('u2-memory');
 await clickText('关闭');
 await sleep(300);
 
-// 4) MOD 入口
-await evaluate(`(() => {
-  const chip = [...document.querySelectorAll('header button')].find((b) => b.textContent.trim().startsWith('MOD'));
-  chip.click();
-  return true;
-})()`);
-await sleep(500);
+// 4) MOD 入口（现在在菜单里）
+await openViaMenu('MOD');
+await sleep(300);
 report.modSheet = await evaluate(`(() => {
   const t = document.body.innerText;
   return { opened: t.includes('MOD（下一轮立刻生效）'), hint: t.includes('立刻生效') };
@@ -209,22 +252,12 @@ report.scrollIcons = await evaluate(`(() => {
 })()`);
 await shot('u2-scroll-icons');
 
-// 6) 對話列表右側圖示 + 新對話從「對話N」開始命名
-await evaluate(`(() => {
-  const chip = [...document.querySelectorAll('header button')].find((b) => b.textContent === '对话');
-  chip.click();
-  return true;
-})()`);
-await sleep(600);
+// 6) 對話列表右側圖示 + 新對話從「對話N」開始命名（入口在 ⋮ 菜單裡）
+await openViaMenu('对话');
 await clickText('新建对话');
 await sleep(1200);
 // 「新建对话」会把面板关掉，重新打开才看得到列表
-await evaluate(`(() => {
-  const chip = [...document.querySelectorAll('header button')].find((b) => b.textContent === '对话');
-  chip.click();
-  return true;
-})()`);
-await sleep(700);
+await openViaMenu('对话');
 report.chatList = await evaluate(`(() => {
   const rename = document.querySelectorAll('[aria-label^="改名"]');
   const del = document.querySelectorAll('[aria-label^="删除"]');
@@ -238,10 +271,16 @@ await shot('u2-chatlist');
 
 report.logs = logs;
 report.pass =
-  report.hud.exists && report.hud.text.includes('上下文') &&
-  report.hudDetail.title && report.hudDetail.system && report.hudDetail.total &&
+  report.chrome.bodyBg === 'rgb(255, 255, 255)' &&
+  report.chrome.navButtonHeight >= 56 &&
+  report.chrome.headerHasContextText === false &&
+  report.hud.exists && report.hud.betweenInputAndSend &&
+  report.afterChat.ringIsNumber &&
+  report.hudDetail.title && report.hudDetail.system && report.hudDetail.total && report.hudDetail.hasPercent &&
+  report.menu.closedBefore && /记忆/.test(report.menu.items) && /对话/.test(report.menu.items) &&
   report.settings.contextSection && report.settings.modeRecent && report.settings.modeAll &&
   report.settings.contextLimit && report.settings.summaryToggle &&
+  report.settings.triggerField && report.settings.triggerHint &&
   report.settings.modSection && report.settings.contextSizeSlider &&
   report.memorySheet.opened && report.memorySheet.summaryCount > 0 &&
   report.modSheet.opened && report.modSheet.hint &&

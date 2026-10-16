@@ -30,18 +30,24 @@ export function assemble(input: AssembleInput): AssembledRequest {
     });
   };
 
-  push('card-pre', 'pre', applyMacros(card.pre, input.macros));
-  push('config-prompt', 'system', applyMacros(config.prompt, input.macros), 'system', 10);
-  push('config-pre', 'system', applyMacros(config.prePrompt, input.macros), 'system', 20);
-  push('card-system', 'system', applyMacros(card.prompt, input.macros), 'system', 30);
-  // 卡片简介**不再注入**：它只是卡片列表上的介绍，不是提示词（使用者明确要求）
-  // MOD：接在卡片提示词之后，套用后立即生效（每轮都重新组装，天然热插拔）
+  /*
+   * 注入顺序（使用者 2026-10-15 定稿）：
+   *   1 卡片提示词 → 2 MOD → 3 卡片前缀词 → 4 全局前缀词 → 5 全局提示词
+   *   → 6 互动页【初始信息设定】→ 7 世界书 → 8 更早的对话摘要 → 9 历史消息
+   *   → 10 全局后置词 → 11 卡片后置词 → 12 本轮输入
+   *
+   * 不再注入：卡片**简介**（只是列表上的介绍）、**主人公设定**、**前情提要**
+   * （后两者由互动页产出的【初始信息设定】取代；JSON 字段保留，导入的卡不会坏）。
+   */
+  push('card-system', 'system', applyMacros(card.prompt, input.macros), 'system', 10);
+  // MOD：紧接卡片提示词，套用后立即生效（每轮都重新组装，天然热插拔）
   for (const m of input.mods ?? []) {
-    push('mod', 'system', applyMacros(m.content, input.macros), 'system', 35);
+    push('mod', 'system', applyMacros(m.content, input.macros), 'system', 20);
   }
-  push('card-system', 'system', applyMacros(card.persona, input.macros), 'system', 41);
-  push('card-system', 'system', applyMacros(card.scenario, input.macros), 'system', 42);
-  push('chat-setup', 'system', input.setup ?? '', 'system', 45);
+  push('card-pre', 'system', applyMacros(card.pre, input.macros), 'system', 30);
+  push('config-pre', 'system', applyMacros(config.prePrompt, input.macros), 'system', 40);
+  push('config-prompt', 'system', applyMacros(config.prompt, input.macros), 'system', 50);
+  push('chat-setup', 'system', input.setup ?? '', 'system', 60);
 
   const wb = scanWorldbook(
     input.worldbook,
@@ -72,9 +78,10 @@ export function assemble(input: AssembleInput): AssembledRequest {
     push('history', 'history', applyMacros(m.content, input.macros), m.role, i, true);
   });
 
-  push('config-post', 'after-history', applyMacros(config.postPrompt, input.macros), 'system', 30);
-  push('card-post', 'post', applyMacros(card.post, input.macros));
-  push('user', 'post', input.userInput, 'user');
+  // 后置词：全局在前、卡片在后（使用者指定）
+  push('config-post', 'post', applyMacros(config.postPrompt, input.macros), 'system', 10);
+  push('card-post', 'post', applyMacros(card.post, input.macros), 'system', 20);
+  push('user', 'post', input.userInput, 'user', 30);
 
   entries.sort((a, b) =>
     POSITION_RANK[a.position] - POSITION_RANK[b.position] || a.priority - b.priority);

@@ -3,13 +3,16 @@ import { db, newId } from '../core/storage/db';
 import type { ConfigRecord, MemoryRecord, MessageRecord } from '../core/storage/types';
 import {
   DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_CONTEXT_MODE, DEFAULT_PARAMS,
-  DEFAULT_SUMMARY_BATCH, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE,
-  SETTING_SUMMARY_BATCH, SETTING_SUMMARY_ENABLED, SUMMARY_FAIL_LIMIT,
+  DEFAULT_SUMMARY_BATCH, DEFAULT_SUMMARY_TRIGGER, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE,
+  SETTING_SUMMARY_BATCH, SETTING_SUMMARY_ENABLED, SETTING_SUMMARY_TRIGGER,
+  SUMMARY_FAIL_LIMIT, SUMMARY_MAX_PAIRS_PER_RUN, SUMMARY_TARGET_PERCENT,
+  SUMMARY_TRIGGER_MAX, SUMMARY_TRIGGER_MIN,
   type ContextMode,
 } from '../core/storage/types';
 import { assemble } from '../core/assembler/assemble';
-import { computeWindow } from '../core/assembler/window';
-import { skeletonSummary, summarizeBatch } from '../core/assembler/summarize';
+import { estimateTokens } from '../core/assembler/budget';
+import { buildExchanges, computeWindow } from '../core/assembler/window';
+import { skeletonSummary, summarizePairs } from '../core/assembler/summarize';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import { isAbortError, type ProviderAdapter } from '../core/providers/types';
 import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
@@ -22,6 +25,7 @@ import { listEnabledMods } from '../core/storage/modRepo';
 import { migrateMemorySchema } from '../core/storage/migrate';
 import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
+import type { ModItem, SummaryItem } from '../core/assembler/types';
 
 const MOCK_CFG = { id: 'mock', baseUrl: '', apiKey: '', extraHeaders: {} };
 
@@ -44,22 +48,29 @@ export interface ContextSettings {
   limit: number;
   summaryEnabled: boolean;
   batch: number;
+  /** 上下文占用达到这个百分比就主动压缩旧对话（默认 90，上限 92） */
+  triggerPercent: number;
 }
 
 export async function readContextSettings(): Promise<ContextSettings> {
-  const [mode, limit, enabled, batch] = await Promise.all([
+  const [mode, limit, enabled, batch, trigger] = await Promise.all([
     db.settings.get(SETTING_CONTEXT_MODE).catch(() => undefined),
     db.settings.get(SETTING_CONTEXT_LIMIT).catch(() => undefined),
     db.settings.get(SETTING_SUMMARY_ENABLED).catch(() => undefined),
     db.settings.get(SETTING_SUMMARY_BATCH).catch(() => undefined),
+    db.settings.get(SETTING_SUMMARY_TRIGGER).catch(() => undefined),
   ]);
   const n = Number(limit?.value ?? DEFAULT_CONTEXT_LIMIT);
   const b = Number(batch?.value ?? DEFAULT_SUMMARY_BATCH);
+  const t = Number(trigger?.value ?? DEFAULT_SUMMARY_TRIGGER);
   return {
     mode: mode?.value === 'all' ? 'all' : DEFAULT_CONTEXT_MODE,
     limit: Number.isInteger(n) && n >= 1 ? n : DEFAULT_CONTEXT_LIMIT,
     summaryEnabled: enabled?.value !== '0',
     batch: Number.isInteger(b) && b >= 1 ? b : DEFAULT_SUMMARY_BATCH,
+    triggerPercent: Number.isFinite(t) && t >= SUMMARY_TRIGGER_MIN && t <= SUMMARY_TRIGGER_MAX
+      ? t
+      : DEFAULT_SUMMARY_TRIGGER,
   };
 }
 
@@ -101,6 +112,9 @@ export interface SessionState {
   streaming: boolean;
   /** 正在把掉出窗口的交换压成摘要（期间禁止发送） */
   summarizing: boolean;
+  /** 在第一个字之前按了停止：把使用者刚发的那句放回输入框，让他们改完再发 */
+  restoreInput: string | null;
+  consumeRestoreInput: () => void;
   error: string | null;
   init: () => Promise<void>;
   openCard: (cardId: string) => Promise<void>;
@@ -182,36 +196,62 @@ export const useSession = create<SessionState>((set, get) => {
     cfg: { id: string; baseUrl: string; apiKey: string; extraHeaders: Record<string, string> };
     model: string;
     signal: AbortSignal;
+    /** 当前上下文占用（token）与预算；用来决定要不要按阈值主动压 */
+    usage: { tokens: number; budget: number; summaries: SummaryItem[]; mods: ModItem[] };
+    card: CardPackage;
+    setup: string;
+    configRow: ConfigRecord | undefined;
   }): Promise<number> => {
     const { chatId, path, settings, streamer, cfg, model, signal } = input;
     if (!settings.summaryEnabled || path.length === 0) return 0;
 
-    const { outsideIds } = computeWindow({
-      messages: path.map((m) => ({ id: m.id, role: m.role })),
-      mode: settings.mode,
-      limit: settings.limit,
-    });
-    if (outsideIds.length === 0) return 0;
+    const messages = path.map((m) => ({ id: m.id, role: m.role }));
+    const { outsideIds } = computeWindow({ messages, mode: settings.mode, limit: settings.limit });
+    const outside = new Set(outsideIds);
 
     const existing = await listSummaries(chatId);
     const lastTo = existing.length > 0 ? existing[existing.length - 1].toMessageId : undefined;
     const coveredIdx = lastTo ? path.findIndex((m) => m.id === lastTo) : -1;
-    const outside = new Set(outsideIds);
-    const batch: MessageRecord[] = [];
-    path.forEach((m, i) => {
-      if (i > coveredIdx && outside.has(m.id)) batch.push(m);
-    });
-    if (batch.length === 0) return 0;
 
-    // 阈值以「对」为单位；batch 已经是完整的交换，用条数/2 估算对数（不足一对也算一对）
-    const pairs = Math.max(1, Math.ceil(batch.length / 2));
-    if (pairs < settings.batch) return 0;
+    /*
+     * 要压哪几对？两个触发取先到者（使用者 2026-10-15 定稿）：
+     * ① 掉出窗口的交换 —— 必须压，否则那段直接丢失；
+     * ② 上下文占用达到 summaryTriggerPercent（默认 90）—— 主动压，直到回落到 ~75%。
+     * 一次最多压 SUMMARY_MAX_PAIRS_PER_RUN 对，不够下一轮继续（避免这一轮等太久）。
+     */
+    const budget = input.usage.budget;
+    const triggerTokens = budget > 0 ? budget * (settings.triggerPercent / 100) : Number.POSITIVE_INFINITY;
+    const targetTokens = budget > 0 ? budget * (SUMMARY_TARGET_PERCENT / 100) : 0;
 
-    const firstIdx = path.indexOf(batch[0]);
-    const lastIdx = path.indexOf(batch[batch.length - 1]);
-    const rangeLabel = `第 ${firstIdx + 1}–${lastIdx + 1} 条`;
-    const dateLabel = formatDateLabel(batch);
-    const failKey = `${chatId}|${batch[0].id}`;
+    const exchanges = buildExchanges(messages);
+    const idxOf = new Map<string, number>();
+    path.forEach((m, i) => idxOf.set(m.id, i));
+
+    const picked: { ids: string[]; start: number; end: number }[] = [];
+    let projected = input.usage.tokens;
+    for (const ex of exchanges) {
+      const start = idxOf.get(ex.ids[0]) ?? -1;
+      const end = idxOf.get(ex.ids[ex.ids.length - 1]) ?? -1;
+      if (start < 0 || end < 0 || end <= coveredIdx) continue;   // 已经压过了
+      const isOutside = outside.has(ex.ids[0]);
+      if (!isOutside) {
+        if (projected < triggerTokens) break;   // 没到阈值，不主动压窗口内的
+        if (projected <= targetTokens) break;   // 已经压够了
+      }
+      const pairTokens = ex.ids.reduce((sum, id) => {
+        const row = path[idxOf.get(id)!];
+        return sum + estimateTokens(row.raw);
+      }, 0);
+      // 压掉原文、换上一段摘要（约 200 token），就是这一对能省下的量
+      projected -= Math.max(0, pairTokens - 200);
+      picked.push({ ids: ex.ids, start, end });
+      if (picked.length >= SUMMARY_MAX_PAIRS_PER_RUN) break;
+    }
+
+    if (picked.length === 0) return 0;
+    if (picked.length < settings.batch) return 0;
+
+    const failKey = `${chatId}|${picked[0].ids[0]}`;
     const previousTail = existing.length > 0
       ? (existing[existing.length - 1].assistantText ?? existing[existing.length - 1].text).slice(-200)
       : undefined;
@@ -223,19 +263,26 @@ export const useSession = create<SessionState>((set, get) => {
     set({ summarizing: true });
 
     try {
+      const pairsPayload = picked.map((p) => p.ids.map((id) => {
+        const row = path[idxOf.get(id)!];
+        return { role: row.role, content: row.raw };
+      }));
+
+      let parts: { userText: string; assistantText: string }[];
       let origin: 'model' | 'local-skeleton' = 'model';
-      let part;
       if (!streamer) {
         // 沒有可用的模型（还没接服务商）：直接本地骨架，宁可粗糙也不能丢
-        part = skeletonSummary(batch.map((m) => ({ role: m.role, content: m.raw })), firstIdx + 1, lastIdx + 1);
+        parts = picked.map((p, i) => skeletonSummary(
+          pairsPayload[i], p.start + 1, p.end + 1,
+        ));
         origin = 'local-skeleton';
       } else {
         try {
-          part = await summarizeBatch({
+          parts = await summarizePairs({
             adapter: streamer,
             cfg,
             model,
-            batch: batch.map((m) => ({ role: m.role, content: m.raw })),
+            pairs: pairsPayload,
             previousTail,
             signal: controller.signal,
           });
@@ -245,35 +292,89 @@ export const useSession = create<SessionState>((set, get) => {
           const n = (summaryFailures.get(failKey) ?? 0) + 1;
           summaryFailures.set(failKey, n);
           if (n < SUMMARY_FAIL_LIMIT) return 0;                        // 还没到阈值：保留 pending，下次重试
-          part = skeletonSummary(batch.map((m) => ({ role: m.role, content: m.raw })), firstIdx + 1, lastIdx + 1);
+          parts = picked.map((p, i) => skeletonSummary(pairsPayload[i], p.start + 1, p.end + 1));
           origin = 'local-skeleton';
         }
       }
 
-      const text = part.userText
-        ? `[用户] ${part.userText}\n[叙事] ${part.assistantText}`
-        : `[叙事] ${part.assistantText}`;
-      await addSummary({
-        chatId,
-        text,
-        userText: part.userText || undefined,
-        assistantText: part.assistantText || undefined,
-        dateLabel,
-        rangeLabel,
-        fromMessageId: batch[0].id,
-        toMessageId: batch[batch.length - 1].id,
-        messageCount: batch.length,
-        origin,
-      });
+      // 一对一项摘要（使用者明确要求）：一次请求可以出多段，但存成多条
+      for (let i = 0; i < picked.length; i += 1) {
+        const part = parts[i] ?? { userText: '', assistantText: '（这一段没有生成摘要）' };
+        const slot = picked[i];
+        const rows = path.slice(slot.start, slot.end + 1);
+        await addSummary({
+          chatId,
+          text: part.userText ? `[用户] ${part.userText}\n[叙事] ${part.assistantText}` : `[叙事] ${part.assistantText}`,
+          userText: part.userText || undefined,
+          assistantText: part.assistantText || undefined,
+          dateLabel: formatDateLabel(rows),
+          rangeLabel: `第 ${slot.start + 1}–${slot.end + 1} 条`,
+          fromMessageId: slot.ids[0],
+          toMessageId: slot.ids[slot.ids.length - 1],
+          messageCount: slot.ids.length,
+          origin,
+        });
+      }
       await trimSummaries(chatId);
       const list = await listSummaries(chatId);
       set({ memories: list, memoryCount: list.length });
-      return 1;
+      return picked.length;
     } finally {
       signal.removeEventListener('abort', relay);
       if (summarizeAbort === controller) summarizeAbort = null;
       set({ summarizing: false });
     }
+  };
+
+  /** 把「要送进提示词的东西」组一遍；streamReply / preview / 阈值判断共用，避免三处逻辑漂移 */
+  const buildAssembly = async (chatId: string, card: CardPackage, path: MessageRecord[], userText: string, setup: string, configRow: ConfigRecord | undefined, settings: ContextSettings) => {
+    const windowed = computeWindow({
+      messages: path.map((m) => ({ id: m.id, role: m.role })),
+      mode: settings.mode,
+      limit: settings.limit,
+    });
+    const windowSet = new Set(windowed.windowIds);
+    const inWindow = path.filter((m) => windowSet.has(m.id));
+    const toPromptRules = promptRules(await loadRulesForChat(chatId, card));
+    const historyItems = inWindow.map((m) => {
+      let content = stripThink(m.raw);
+      if (toPromptRules.length > 0) content = applyRegexRules(content, toPromptRules);
+      return { id: m.id, role: m.role, content };
+    });
+    const active = await getActive();
+    const summaries = await listSummaries(chatId);
+    const mods = await listEnabledMods();
+    const assembled = assemble({
+      card: {
+        pre: card.json.prompts.pre,
+        prompt: card.json.prompts.prompt,
+        post: card.json.prompts.post,
+        description: card.json.description,
+        persona: card.json.persona.intro,
+        scenario: card.json.scenario,
+      },
+      config: {
+        prompt: configRow?.prompt ?? '',
+        prePrompt: configRow?.prePrompt ?? '',
+        postPrompt: configRow?.postPrompt ?? '',
+      },
+      worldbook: worldbookOf(card),
+      summaries: toSummaryItems(summaries),
+      mods,
+      history: historyItems,
+      userInput: userText,
+      setup,
+      macros: macroContext(card.json.name, card.json.persona.intro),
+      limits: {
+        contextLength: active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
+        maxTokens: active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
+        reserve: 512,
+        worldbookTokenBudget: 2000,
+      },
+    });
+    const budget = (active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength)
+      - (active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens) - 512;
+    return { assembled, budget, summaries: toSummaryItems(summaries), mods, windowCount: windowed.windowIds.length };
   };
 
   /**
@@ -296,54 +397,19 @@ export const useSession = create<SessionState>((set, get) => {
      * 就會被默默忽略、生成照跑——使用者看到的就是「按了沒反應、停不下來」。
      */
     controller: AbortController;
+    /**
+     * 在「第一个字都还没吐出来」时按停止 → 撤回这条使用者讯息并把文字放回输入框。
+     * 为什么必须这样：否则会留下一条没人回复的使用者讯息，
+     * 下一次发送就变成两条使用者讯息连着 —— 正好破掉「只能一对」的规则。
+     */
+    revertOnEmptyStop?: { id: string; parentId: string | null; text: string };
   }): Promise<void> => {
     const { chatId, parentId, userText, historyPath, card, setup, configRow, controller } = input;
-    const toPromptRules = promptRules(await loadRulesForChat(chatId, card));
     const settings = await readContextSettings();
     const active = await getActive();
 
-    // 只把窗口内的消息送进提示词；窗口外的已经由 ensureSummaries 压成摘要
-    const windowed = computeWindow({
-      messages: historyPath.map((m) => ({ id: m.id, role: m.role })),
-      mode: settings.mode,
-      limit: settings.limit,
-    });
-    const windowSet = new Set(windowed.windowIds);
-    const inWindow = historyPath.filter((m) => windowSet.has(m.id));
-
-    const historyItems = inWindow.map((m) => {
-      let content = stripThink(m.raw);
-      if (toPromptRules.length > 0) content = applyRegexRules(content, toPromptRules);
-      return { id: m.id, role: m.role, content };
-    });
-    const assembled = assemble({
-      card: {
-        pre: card.json.prompts.pre,
-        prompt: card.json.prompts.prompt,
-        post: card.json.prompts.post,
-        description: card.json.description,
-        persona: card.json.persona.intro,
-        scenario: card.json.scenario,
-      },
-      config: {
-        prompt: configRow?.prompt ?? '',
-        prePrompt: configRow?.prePrompt ?? '',
-        postPrompt: configRow?.postPrompt ?? '',
-      },
-      worldbook: worldbookOf(card),
-      summaries: toSummaryItems(await listSummaries(chatId)),
-      mods: await listEnabledMods(),
-      history: historyItems,
-      userInput: userText,
-      setup,
-      macros: macroContext(card.json.name, card.json.persona.intro),
-      limits: {
-        contextLength: active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
-        maxTokens: active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
-        reserve: 512,
-        worldbookTokenBudget: 2000,
-      },
-    });
+    // 只把窗口内的消息送进提示词；窗口外的已经由 ensureSummaries 压成摘要（共用 buildAssembly，免得两处逻辑漂移）
+    const { assembled } = await buildAssembly(chatId, card, historyPath, userText, setup, configRow, settings);
 
     const streamer = active
       ? adapterFor(active.provider.protocol)
@@ -393,14 +459,28 @@ export const useSession = create<SessionState>((set, get) => {
     }
 
     const stopped = controller.signal.aborted;
-    // 一個字都還沒吐就被停掉：不要留一條空的 assistant 訊息，直接把畫面還原成使用者訊息
+    // 一個字都還沒吐就被停掉：不要留一條空的 assistant 訊息
     if (stopped && !acc.trim()) {
-      set({
-        messages: await pathToLeaf(chatId, parentId),
-        draft: '',
-        streaming: false,
-        error: null,
-      });
+      const revert = input.revertOnEmptyStop;
+      if (revert) {
+        // 撤回刚发的那条使用者讯息，世界线回到发送前，并把文字放回输入框
+        await db.messages.delete(revert.id);
+        await db.chats.update(chatId, { currentLeafId: revert.parentId, updatedAt: Date.now() });
+        set({
+          messages: await pathToLeaf(chatId, revert.parentId),
+          draft: '',
+          streaming: false,
+          error: null,
+          restoreInput: revert.text,
+        });
+      } else {
+        set({
+          messages: await pathToLeaf(chatId, parentId),
+          draft: '',
+          streaming: false,
+          error: null,
+        });
+      }
       return;
     }
 
@@ -437,10 +517,13 @@ export const useSession = create<SessionState>((set, get) => {
     userText: string;
     before: MessageRecord[];
     controller: AbortController;
+    revertOnEmptyStop?: { id: string; parentId: string | null; text: string };
   }): Promise<void> => {
     const { chatId, card, parentId, userText, before, controller } = input;
     const settings = await readContextSettings();
     const active = await getActive();
+    const chat = await db.chats.get(chatId);
+    const configRow = await db.configs.where('scope').equals('global').first();
     const summaryStreamer = active ? adapterFor(active.provider.protocol) : adapter;
     const summaryCfg = active
       ? {
@@ -448,6 +531,9 @@ export const useSession = create<SessionState>((set, get) => {
           apiKey: active.provider.apiKey, extraHeaders: active.provider.extraHeaders,
         }
       : MOCK_CFG;
+
+    // 先量一次现在的占用：决定要不要按阈值主动压（① 掉出窗口 ② 达到 triggerPercent，两者取先到者）
+    const pre = await buildAssembly(chatId, card, before, userText, chat?.promptSnapshot ?? '', configRow, settings);
     await ensureSummaries({
       chatId,
       path: before,
@@ -456,14 +542,16 @@ export const useSession = create<SessionState>((set, get) => {
       cfg: summaryCfg,
       model: active?.preset.model ?? 'mock',
       signal: controller.signal,
+      usage: { tokens: pre.assembled.totalTokens, budget: pre.budget, summaries: pre.summaries, mods: pre.mods },
+      card,
+      setup: chat?.promptSnapshot ?? '',
+      configRow,
     });
     if (controller.signal.aborted) {
       set({ messages: await pathToLeaf(chatId, parentId), draft: '', streaming: false, error: null });
       return;
     }
 
-    const chat = await db.chats.get(chatId);
-    const configRow = await db.configs.where('scope').equals('global').first();
     await streamReply({
       chatId,
       parentId,
@@ -473,6 +561,7 @@ export const useSession = create<SessionState>((set, get) => {
       setup: chat?.promptSnapshot ?? '',
       configRow,
       controller,
+      revertOnEmptyStop: input.revertOnEmptyStop,
     });
   };
 
@@ -491,7 +580,10 @@ export const useSession = create<SessionState>((set, get) => {
     draft: '',
     streaming: false,
     summarizing: false,
+    restoreInput: null,
     error: null,
+
+    consumeRestoreInput: () => set({ restoreInput: null }),
 
     init: async () => {
       /**
@@ -710,6 +802,14 @@ export const useSession = create<SessionState>((set, get) => {
 
       const chat = await db.chats.get(chatId);
       const parentId = chat?.currentLeafId ?? null;
+      // 严格一对：上一句还是使用者讯息（例如 AI 回复被删掉）时不再插入第二条
+      if (parentId) {
+        const tail = await db.messages.get(parentId);
+        if (tail?.role === 'user') {
+          set({ error: '上一轮还没有回复。请先按「重新生成」，或删掉那条消息再发。' });
+          return;
+        }
+      }
 
       const userMsg: MessageRecord = {
         id: newId('m_'), chatId, parentId, role: 'user', raw: clean,
@@ -723,7 +823,10 @@ export const useSession = create<SessionState>((set, get) => {
       // 畫面上要立刻看到剛送出的使用者訊息；提示詞的歷史則不含這一則（它在 userInput 裡）
       set({ messages: historyPath, draft: '', streaming: true, error: null });
 
-      await runTurn({ chatId, card, parentId: userMsg.id, userText: clean, before, controller });
+      await runTurn({
+        chatId, card, parentId: userMsg.id, userText: clean, before, controller,
+        revertOnEmptyStop: { id: userMsg.id, parentId, text: clean },
+      });
     },
 
     stop: () => {
