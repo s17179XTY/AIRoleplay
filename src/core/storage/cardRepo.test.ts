@@ -148,4 +148,22 @@ describe('卡片头像与封面引用', () => {
     expect(record!.avatarAssetId).toBe(id + ':' + AVATAR);
     expect(record!.coverAssetId).toBe(id + ':' + COVER);
   });
+
+  it('内置演示卡：版本没变但内建档案被弄丢（旧版 blob 解不开）→ ensureSeedCard 自动补回来，不覆盖使用者改过的提示词', async () => {
+    const { seedPackage } = await import('./seedPackage');
+    const seed = seedPackage();
+    await saveCardPackage(seed);
+    // 使用者改过提示词
+    const edited = await loadCardPackage(DEMO_CARD_ID);
+    edited!.json.prompts.prompt = '我改过的提示词';
+    await saveCardPackage(edited!);
+    // 模拟旧版同步把互动页弄丢（卡片还引用着它，但本地文件不见了）
+    await db.cardFiles.delete([DEMO_CARD_ID, 'ui/index.html']);
+
+    const id = await ensureSeedCard();
+    const healed = await loadCardPackage(id);
+    expect(healed!.texts.some((t) => t.path === 'ui/index.html')).toBe(true);
+    expect(healed!.texts.find((t) => t.path === 'ui/index.html')!.text.length).toBeGreaterThan(100);
+    expect(healed!.json.prompts.prompt).toBe('我改过的提示词');
+  });
 });

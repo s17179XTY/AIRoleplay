@@ -9,6 +9,7 @@ import { pushPending, pullChanges, getRev } from './engine';
 import { plaintextOf, ensureBlobUploaded, ensureBlobLocal, needsBlob, MAX_BLOB_BATCH } from './blobs';
 import { deriveAuthKey, deriveMasterKey, deriveRecoveryAuthKey, deriveRecoveryKey, generateRecoveryCode, TEST_KDF } from './kdf';
 import { generateDek, wrapDek, decryptEnvelope } from './envelope';
+import { encryptBlob } from './blob';
 
 const rnd = () => Math.random().toString(36).slice(2);
 const INVITE = 'INV-BLOB';
@@ -64,7 +65,7 @@ describe('blob 引擎', () => {
     expect(needsBlob('cardFile', new Uint8Array(256 * 1024 + 1))).toBe(true);
   });
 
-  it('大文本走 blob：信封只帶 blobRef 與 __fileKey，明文不進信封', async () => {
+  it('大文本走 blob：信封只帶 blobRef（v2 金鑰由 DEK+blobId 推導），明文不進信封', async () => {
     const { env, client, dek } = await account();
     const db = await device(`blob-b-${rnd()}`);
     await db.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text: 'x'.repeat(BIG) });
@@ -76,17 +77,18 @@ describe('blob 引擎', () => {
     expect(record?.blob_ref).toBeTruthy();
     expect(record!.ciphertext.length).toBeLessThan(2048); // 300 KiB 的明文不可能塞進這麼小的信封
 
-    const decoded = await decryptEnvelope<{ __fileKey: string }>(dek, 'cardFile', 'c1:ui/index.html', record!.ciphertext);
-    expect(decoded.data.__fileKey).toBeTruthy();
+    const decoded = await decryptEnvelope<{ __fileKey?: string }>(dek, 'cardFile', 'c1:ui/index.html', record!.ciphertext);
+    // v2 不再把隨機 fileKey 放進信封（金鑰由 DEK+blobId 決定性推導，換裝置也一致）
+    expect(decoded.data.__fileKey).toBeUndefined();
 
     const state = await db.blobState.get(record!.blob_ref!);
     expect(state?.state).toBe('uploaded');
-    expect(state?.fileKey).toBe(decoded.data.__fileKey); // 兩邊一致 → 重試不會換鑰匙
+    expect(state?.fileKey).toBeUndefined();
     expect(state?.size).toBeGreaterThanOrEqual(BIG);
     expect(await pendingCount(db)).toBe(0);
   });
 
-  it('重複推送不會把 fileKey 換掉（換了舊信封就永遠解不開）', async () => {
+  it('重複推送重用同一個 blobId（v2 金鑰是推導的，重試不會換鑰匙）', async () => {
     const { client, dek } = await account();
     const db = await device(`blob-c-${rnd()}`);
     const text = 'y'.repeat(BIG);
@@ -99,8 +101,8 @@ describe('blob 引擎', () => {
     await pushPending({ db, client, dek, deviceId: 'dev_a' });
     const after = (await db.blobState.get(before.blobId))!;
 
-    expect(after.fileKey).toBe(before.fileKey);
     expect(after.blobId).toBe(before.blobId);
+    expect(after.state).toBe('uploaded');
   });
 
   it('同一個 blob 併發上傳只會送一次（KV 對同一 key 每秒限 1 次寫入）', async () => {
@@ -114,7 +116,7 @@ describe('blob 引擎', () => {
       ensureBlobUploaded(ctx, 'assetMeta', 'img_r'),
     ]);
     expect(a?.blobId).toBe(b?.blobId);
-    expect(a?.fileKey).toBe(b?.fileKey); // 共用同一個 promise → 不會產生兩把鑰匙
+    expect(a?.blobId).toBe(b?.blobId); // 共用同一個 promise → 不會重複上傳
     expect((await db.blobState.toArray()).filter((s) => s.refId === 'img_r')).toHaveLength(1);
   });
 
@@ -152,12 +154,12 @@ describe('blob 引擎', () => {
     await dbA.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text: 'w'.repeat(BIG) });
     await pushPending({ db: dbA, client, dek, deviceId: 'dev_a' });
 
-    // 手動在 B 造出「只有信封」的狀態：明文還沒抓回來，只有 blobId 與 fileKey
+    // 手動在 B 造出「只有信封」的狀態：明文還沒抓回來，只有 blobId
     const source = (await dbA.blobState.toArray())[0];
     await dbB.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html' });
     await dbB.blobState.put({
       blobId: source.blobId, kind: 'cardFile', state: 'remote',
-      refId: 'c1:ui/index.html', size: source.size, fileKey: source.fileKey,
+      refId: 'c1:ui/index.html', size: source.size,
     });
 
     const kv = testKV(env);
@@ -166,7 +168,7 @@ describe('blob 引擎', () => {
     expect(await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'cardFile', 'c1:ui/index.html')).toBe('pending');
     expect(await dbB.blobState.get(source.blobId)).toBeTruthy();
     // pending 時仍要保住本地參照，否則就再也補不回來了
-    expect((await dbB.blobState.get(source.blobId))?.fileKey).toBe(source.fileKey);
+    expect((await dbB.blobState.get(source.blobId))?.blobId).toBe(source.blobId);
 
     for (const key of kv.keys()) kv.setVisible(key, true);
     expect(await ensureBlobLocal({ db: dbB, client, dek, deviceId: 'dev_b' }, 'cardFile', 'c1:ui/index.html')).toBe('fetched');
@@ -178,6 +180,83 @@ describe('blob 引擎', () => {
     const db = await device(`blob-f-${rnd()}`);
     await db.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text: 'local' });
     expect(await ensureBlobLocal({ db, client, dek, deviceId: 'dev_a' }, 'cardFile', 'c1:ui/index.html')).toBe('have');
+  });
+
+  it('換一台裝置重推同一份內容會覆寫雲端密文，第三台拉取仍然解得開（舊版「換鑰匙」bug 的根治）', async () => {
+    const { env, client, dek } = await account();
+    const user = await env.DB.prepare('SELECT id FROM users').first<{ id: string }>();
+    const text = 'r'.repeat(BIG);
+
+    // 裝置 A 上傳並推送
+    const dbA = await device(`blob-h1-${rnd()}`);
+    await dbA.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text });
+    await pushPending({ db: dbA, client, dek, deviceId: 'dev_a' });
+    const blobId = (await dbA.blobState.toArray())[0].blobId;
+    const kvBefore = env.BLOBS.get(`${user!.id}/${blobId}`, 'arrayBuffer') as Promise<ArrayBuffer>;
+    const before = new Uint8Array(await kvBefore);
+
+    // 裝置 C（全新本機、沒有 blobState）有同一份明文 → 重新推送，會用 v2 覆寫雲端密文
+    const dbC = await device(`blob-h2-${rnd()}`);
+    await dbC.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text });
+    await pushPending({ db: dbC, client, dek, deviceId: 'dev_c' });
+    const after = new Uint8Array(await (env.BLOBS.get(`${user!.id}/${blobId}`, 'arrayBuffer') as Promise<ArrayBuffer>));
+    expect(Array.from(after)).not.toEqual(Array.from(before));
+
+    // 裝置 D 拉取：信封沒有 fileKey，但 v2 金鑰由 DEK+blobId 推導 → 一定解得開
+    const dbD = await device(`blob-h3-${rnd()}`);
+    await pullChanges({ db: dbD, client, dek, deviceId: 'dev_d' });
+    expect((await dbD.cardFiles.get(['c1', 'ui/index.html']))?.text?.length).toBe(BIG);
+  });
+
+  it('雲端 blob 解不開時：不拋例外、標成 broken，其他資料照常同步', async () => {
+    const { env, client, dek } = await account();
+    const user = await env.DB.prepare('SELECT id FROM users').first<{ id: string }>();
+    const text = 'b'.repeat(BIG);
+    const dbA = await device(`blob-i1-${rnd()}`);
+    await dbA.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text });
+    await pushPending({ db: dbA, client, dek, deviceId: 'dev_a' });
+    const source = (await dbA.blobState.toArray())[0];
+
+    // 用「另一個 DEK」加密同一份明文丟進 KV，模擬舊版同步留下的壞資料
+    const otherDek = await generateDek();
+    const broken = await encryptBlob(otherDek, source.blobId, new TextEncoder().encode(text), { legacy: true });
+    await env.BLOBS.put(`${user!.id}/${source.blobId}`, broken.body);
+
+    const dbB = await device(`blob-i2-${rnd()}`);
+    await dbB.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html' });
+    await dbB.blobState.put({
+      blobId: source.blobId, kind: 'cardFile', state: 'remote',
+      refId: 'c1:ui/index.html', size: source.size,
+    });
+
+    const { fetchRemoteBlobs } = await import('./engine');
+    const out = await fetchRemoteBlobs({ db: dbB, client, dek, deviceId: 'dev_b' });
+    expect(out.broken).toBe(1);
+    expect((await dbB.blobState.get(source.blobId))?.state).toBe('broken');
+  });
+
+  it('migrateBlobKeys：本地有明文時把舊格式/blobs 重新用 v2 推上去（修復雲端）', async () => {
+    const { env, client, dek } = await account();
+    const user = await env.DB.prepare('SELECT id FROM users').first<{ id: string }>();
+    const text = 'm'.repeat(BIG);
+    const dbA = await device(`blob-j1-${rnd()}`);
+    await dbA.cardFiles.put({ cardId: 'c1', path: 'ui/index.html', kind: 'html', text });
+    await pushPending({ db: dbA, client, dek, deviceId: 'dev_a' });
+    const source = (await dbA.blobState.toArray())[0];
+
+    // 偽裝成舊版上傳（帶 fileKey）+ 把 KV 內容弄壞
+    await dbA.blobState.put({ ...source, fileKey: 'legacy-key' });
+    await env.BLOBS.put(`${user!.id}/${source.blobId}`, new Uint8Array([1, 2, 3]));
+
+    const { migrateBlobKeys } = await import('./blobs');
+    const out = await migrateBlobKeys({ db: dbA, client, dek, deviceId: 'dev_a' });
+    expect(out.repaired).toBe(1);
+    expect((await dbA.blobState.get(source.blobId))?.fileKey).toBeUndefined();
+
+    // 新的裝置拉取 → 解密成功
+    const dbB = await device(`blob-j2-${rnd()}`);
+    await pullChanges({ db: dbB, client, dek, deviceId: 'dev_b' });
+    expect((await dbB.cardFiles.get(['c1', 'ui/index.html']))?.text?.length).toBe(BIG);
   });
 
   it('素材圖（二進位）走 blob 往返，且信封不含 bytes', async () => {

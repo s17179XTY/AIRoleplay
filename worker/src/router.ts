@@ -104,7 +104,8 @@ export async function route(request: Request, env: Env, now = Date.now()): Promi
     const blobId = decodeURIComponent(blobMatch[1]);
     if (method === 'PUT') {
       const bytes = await request.arrayBuffer();
-      return toResponse(await handlePutBlob(env, auth.userId, blobId, bytes, now), cors);
+      const replace = url.searchParams.get('replace') === '1';
+      return toResponse(await handlePutBlob(env, auth.userId, blobId, bytes, now, replace), cors);
     }
     const reply = await handleGetBlob(env, auth.userId, blobId);
     if (!reply.bytes) return toResponse(reply, cors);

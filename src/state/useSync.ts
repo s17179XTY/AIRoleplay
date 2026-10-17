@@ -141,6 +141,12 @@ function errorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (raw.includes('VITE_SYNC_API')) return '這個版本沒有設定同步後端';
   if (raw.includes('Failed to fetch') || raw.includes('NetworkError')) return '連不上伺服器，請稍後重試';
+  // WebCrypto 的 DOMException 對使用者完全看不懂，翻成「資料對不上」並給可行的下一步。
+  // 注意：單一素材解不開已經在同步引擎裡被接住（跳過 + 提示），走到這裡代表是更根本的金鑰問題。
+  if (raw.includes('operation-specific') || raw.includes('OperationError') || raw.includes('解密失敗')) {
+    return '解密失敗：本機與雲端的加密資料對不上。請先「退出登入 → 重新登入」再試；'
+      + '如果仍然失敗，多半是這個帳號的雲端金鑰來自舊版本、已經損壞，可以試「忘記密碼 → 用恢復碼救回」重建金鑰（本機資料不受影響）。';
+  }
   return raw;
 }
 
@@ -242,7 +248,12 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       const me = await client.me();
       const serverKdf = JSON.parse(me.kdf) as KdfParams;
       const masterKey = await deriveMasterKey(password, name, serverKdf);
-      currentDek = await unwrapDek(me.wrappedDek, masterKey);
+      try {
+        currentDek = await unwrapDek(me.wrappedDek, masterKey);
+      } catch {
+        // 登入 API 都過了（密碼正確），卻解不開包好的 DEK：幾乎只可能是雲端金鑰資料壞掉。
+        throw new Error('密碼正確，但無法解開這個帳號的加密金鑰（雲端金鑰資料可能已損壞）。可以試「忘記密碼 → 用恢復碼救回」重建金鑰。');
+      }
 
       saveUsername(name);
       saveKdf(name, serverKdf);
@@ -407,13 +418,22 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       const quotaUsed = await db.syncState.get('quotaUsed');
       const quotaLimit = await db.syncState.get('quotaLimit');
       const lastSyncAt = await db.syncState.get('lastSyncAt');
+      let message: string | null = null;
+      if (result.blobsBroken > 0) {
+        message = `有 ${result.blobsBroken} 個雲端素材無法解密（舊版本同步留下的壞資料），已跳過，其他資料照常同步。`
+          + '如果封面/頭像顯示不出來，在卡片編輯裡重新上傳一次即可修復。';
+      } else if (result.conflicts > 0) {
+        message = `${result.conflicts} 筆衝突已保留本地副本`;
+      } else if (result.blobsRepaired > 0) {
+        message = `已修復 ${result.blobsRepaired} 個雲端素材（舊版本同步遺留）`;
+      }
       set({
         status: 'idle',
         pending: await pendingCount(),
         conflicts,
         quota: quotaLimit ? { used: Number(quotaUsed?.value ?? 0), limit: Number(quotaLimit.value) } : get().quota,
         lastSyncAt: lastSyncAt ? Number(lastSyncAt.value) : Date.now(),
-        message: result.conflicts > 0 ? `${result.conflicts} 筆衝突已保留本地副本` : null,
+        message,
       });
       // 有拉到別台裝置的東西（或補回了 blob）就通知畫面重讀，否則看起來像「同步完資料沒了」
       if (result.applied > 0) bumpData('sync');

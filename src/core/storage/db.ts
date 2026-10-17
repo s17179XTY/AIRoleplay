@@ -24,13 +24,13 @@ export interface BlobStateRecord {
    * 沒有它就無法從 refId 反查回哪一張表——那會讓「剛同步完卡片頁/圖片是空的」永遠補不回來。
    */
   kind?: 'assetMeta' | 'cardFile';
-  state: 'local' | 'uploaded' | 'remote';
+  /** broken = 雲端密文解不開（舊版同步遺留）；跳過它，不能拖垮整次同步 */
+  state: 'local' | 'uploaded' | 'remote' | 'broken';
   refId: string;
   size: number;
   /**
-   * 用 DEK 包好的 fileKey（base64url）。
-   * 必須持久化後重用：blobId 是內容定址，但密文取決於隨機 fileKey；
-   * 重試時若換一把新鑰匙，先前已經推上雲的信封就永遠解不開。
+   * 舊格式的 fileKey（base64url，用 DEK 包好）。v2 之後金鑰由 DEK+blobId 決定性推導，
+   * 這個欄位只用來讀「舊版上傳」的 blob；讀到後會由 migrateBlobKeys() 換成 v2。
    */
   fileKey?: string;
 }

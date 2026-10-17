@@ -107,7 +107,7 @@ export interface SyncClient {
   me(): Promise<MeResult>;
   pull(cursor: number, limit?: number): Promise<PullResult>;
   push(payload: PushPayload): Promise<PushResult>;
-  putBlob(blobId: string, bytes: Uint8Array): Promise<{ size: number }>;
+  putBlob(blobId: string, bytes: Uint8Array, opts?: { replace?: boolean }): Promise<{ size: number }>;
   /** 404 回 null：KV 是最終一致的，剛上傳的檔案可能還讀不到，呼叫端要「稍後重試」而不是當失敗 */
   getBlob(blobId: string): Promise<Uint8Array | null>;
   devices(): Promise<DeviceInfo[]>;
@@ -234,8 +234,11 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
     async push(payload) {
       return call<PushResult>('/api/sync/push', { method: 'POST', body: payload });
     },
-    async putBlob(blobId, bytes) {
-      const res = await binary(`/api/blob/${encodeURIComponent(blobId)}`, 'PUT', bytes);
+    async putBlob(blobId, bytes, opts) {
+      // replace=1：內容定址的 blobId 可能早就存在雲端，但密文/金鑰版本對不上。
+      // 要求伺服器覆寫 KV，讓「最後一次推送」永遠對應真正的密文（v2 金鑰是決定性的，別台也解得開）。
+      const query = opts?.replace ? '?replace=1' : '';
+      const res = await binary(`/api/blob/${encodeURIComponent(blobId)}${query}`, 'PUT', bytes);
       const text = await res.text();
       let parsed: Record<string, unknown> = {};
       if (text) {

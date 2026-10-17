@@ -120,9 +120,48 @@ export async function ensureSeedCard(): Promise<string> {
     const isBuiltinDemo = existing.author === pkg.json.author;
     // 已损坏（老版本只写了卡片行、没有写 card.json）→ 重建；
     // 内置演示卡版本升级 → 覆盖；用户自己改过的卡片不动。
-    if (loaded && !(isBuiltinDemo && loaded.json.version !== pkg.json.version)) return existing.id;
+    if (loaded && !(isBuiltinDemo && loaded.json.version !== pkg.json.version)) {
+      /*
+       * 版本没变，但有些内建文件可能「被同步弄丢了」——典型是旧版 blob 金钥对不上，
+       * 新装置拉不到互动页，卡片打开是空的。这里只补 card.json 仍然引用、但本地已没有的
+       * 内建文件；使用者主动删掉的页面/世界书（json 里不再引用）不会被复活，改过的内容也不会被覆盖。
+       */
+      if (isBuiltinDemo && healMissingBuiltinFiles(loaded, pkg)) {
+        await saveCardPackage(loaded);
+      }
+      return existing.id;
+    }
   }
   return saveCardPackage(pkg);
+}
+
+/**
+ * 把「内建卡 seed 里有、card.json 也还引用着、但本地文件已经不见了」的档案补回去。
+ * 这些是平台内建内容（互动页 / 世界书 / 封面），不是使用者上传的图；
+ * 使用者上传的封面/头像等自订档案不走这里（救不回来就让使用者重传）。
+ */
+function healMissingBuiltinFiles(loaded: CardPackage, seed: CardPackage): boolean {
+  let changed = false;
+  const referencedTexts = new Set(
+    [loaded.json.worldbook, loaded.json.regex, loaded.json.ui?.entry, loaded.json.promptTemplate]
+      .filter((p): p is string => Boolean(p)),
+  );
+  for (const file of seed.texts) {
+    if (!referencedTexts.has(file.path)) continue;
+    if (loaded.texts.some((t) => t.path === file.path)) continue;
+    loaded.texts.push({ ...file });
+    changed = true;
+  }
+  const referencedAssets = new Set(
+    [loaded.json.cover, loaded.json.avatar].filter((p): p is string => Boolean(p)),
+  );
+  for (const asset of seed.assets) {
+    if (!referencedAssets.has(asset.path)) continue;
+    if (loaded.assets.some((a) => a.path === asset.path)) continue;
+    loaded.assets.push({ ...asset });
+    changed = true;
+  }
+  return changed;
 }
 
 export async function listCards(): Promise<CardRecord[]> {

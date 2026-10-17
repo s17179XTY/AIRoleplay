@@ -2,7 +2,9 @@ import type { DshDB } from '../storage/db';
 import { decryptEnvelope, encryptEnvelope, type Envelope } from './envelope';
 import { keyOf, mergeRemoteRow, SYNC_TABLES, sanitizeForSync, type SyncKind } from './kinds';
 import { clearOutbox, setApplyingRemote, takeOutbox, type OutboxEntry } from './outbox';
-import { ensureBlobLocal, ensureBlobUploaded, MAX_BLOB_BATCH, needsBlob, plaintextOf } from './blobs';
+import {
+  ensureBlobLocal, ensureBlobUploaded, MAX_BLOB_BATCH, migrateBlobKeys, needsBlob, plaintextOf,
+} from './blobs';
 import type { PulledRecord, SyncClient } from './client';
 
 export interface EngineContext {
@@ -103,7 +105,8 @@ export async function pushPending(
 
     const data = sanitizeForSync(entry.kind, row);
     if (blob) {
-      data.__fileKey = blob.fileKey;
+      // v2 的檔案金鑰由 DEK+blobId 決定性推導，信封不需要再帶 __fileKey
+      delete data.__fileKey;
       // 內容已經在 blob 裡，信封不能再帶一份——否則又會撞上 D1 單行 2 MB / 我們自己 256 KiB 的上限
       delete data.text;
       delete data.bytes;
@@ -235,7 +238,11 @@ export async function applyRemoteRecord(
 export async function pullChanges(
   ctx: EngineContext,
   opts: { maxPages?: number } = {},
-): Promise<{ applied: number; cursor: number }> {
+): Promise<{
+  applied: number;
+  cursor: number;
+  blobs: { fetched: number; pending: number; broken: number; repaired: number };
+}> {
   const maxPages = opts.maxPages ?? 20;
   let cursor = (await getSyncState(ctx)).cursor;
   let applied = 0;
@@ -254,8 +261,8 @@ export async function pullChanges(
   }
 
   await ctx.db.syncState.put({ key: 'lastSyncAt', value: String(Date.now()) });
-  await fetchRemoteBlobs(ctx);
-  return { applied, cursor };
+  const blobs = await fetchRemoteBlobs(ctx);
+  return { applied, cursor, blobs };
 }
 
 /**
@@ -265,9 +272,18 @@ export async function pullChanges(
  * 不抓回來的話新裝置上「卡片打開是空的、圖片全不見」——看起來就像資料沒同步過來。
  * KV 是最終一致的，抓不到就維持 state='remote'，下次同步再試（不標失敗、不清本地參照）。
  */
-export async function fetchRemoteBlobs(ctx: EngineContext): Promise<{ fetched: number; pending: number }> {
+export async function fetchRemoteBlobs(ctx: EngineContext): Promise<{
+  fetched: number;
+  pending: number;
+  broken: number;
+  repaired: number;
+}> {
+  // 先把「舊格式/壞掉但本地有明文」的 blob 換成 v2 並覆寫雲端（修復舊版同步留下的雷）
+  const migrated = await migrateBlobKeys(ctx);
+
   let fetched = 0;
-  let pending = 0;
+  let pending = migrated.pending;
+  let broken = 0;
   const waiting = await ctx.db.blobState.where('state').equals('remote').limit(MAX_BLOB_BATCH).toArray();
   for (const state of waiting) {
     if (!state.kind) {
@@ -277,9 +293,10 @@ export async function fetchRemoteBlobs(ctx: EngineContext): Promise<{ fetched: n
     }
     const outcome = await ensureBlobLocal(ctx, state.kind, state.refId);
     if (outcome === 'fetched' || outcome === 'have') fetched += 1;
+    else if (outcome === 'broken') broken += 1;
     else pending += 1;
   }
-  return { fetched, pending };
+  return { fetched, pending, broken, repaired: migrated.repaired };
 }
 
 /** 首次註冊：把本地既有的全部資料排進 outbox 並推上去 */
@@ -313,6 +330,10 @@ export async function syncNow(ctx: EngineContext): Promise<{
   conflicts: number;
   applied: number;
   cursor: number;
+  /** 有幾顆雲端素材解不開（舊版遺留）；>0 時 UI 要提示，但不影響其他資料同步 */
+  blobsBroken: number;
+  /** 這一輪修復（改成 v2 金鑰 + 覆寫雲端）了幾顆 */
+  blobsRepaired: number;
 }> {
   let pushed = 0;
   let conflicts = 0;
@@ -323,7 +344,14 @@ export async function syncNow(ctx: EngineContext): Promise<{
     if (step.pushed === 0) break;
   }
   const pulled = await pullChanges(ctx);
-  return { pushed, conflicts, applied: pulled.applied, cursor: pulled.cursor };
+  return {
+    pushed,
+    conflicts,
+    applied: pulled.applied,
+    cursor: pulled.cursor,
+    blobsBroken: pulled.blobs.broken,
+    blobsRepaired: pulled.blobs.repaired,
+  };
 }
 
 /* ------------------------------------------------------------------ *

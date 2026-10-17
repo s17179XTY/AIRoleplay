@@ -70,6 +70,34 @@ describe('blob 端點（KV）', () => {
     expect(row?.ref_count).toBe(1);
   });
 
+  it('replace=1：同一個 blob 允許覆寫密文（修復舊版「金鑰對不上密文」；配額只按差額調整）', async () => {
+    const first = await handlePutBlob(env, USER, 'blob_r', bytes(100, 1).buffer, 1000);
+    expect(first.status).toBe(200);
+    expect((await handleGetBlob(env, USER, 'blob_r')).bytes).toBeTruthy();
+    const before = new Uint8Array((await handleGetBlob(env, USER, 'blob_r')).bytes!);
+
+    const replaced = await handlePutBlob(env, USER, 'blob_r', bytes(100, 9).buffer, 1001, true);
+    expect(replaced.status).toBe(200);
+    expect(replaced.body.replaced).toBe(true);
+    const after = new Uint8Array((await handleGetBlob(env, USER, 'blob_r')).bytes!);
+    expect(Array.from(after)).not.toEqual(Array.from(before));
+    // 大小不變 → 配額不變
+    const user = await env.DB.prepare('SELECT used_bytes FROM users WHERE id = ?').bind(USER).first<{ used_bytes: number }>();
+    expect(user?.used_bytes).toBe(100);
+    const row = await env.DB.prepare('SELECT ref_count, size FROM blobs WHERE blob_id = ?').bind('blob_r').first<{ ref_count: number; size: number }>();
+    expect(row?.ref_count).toBe(1);
+    expect(row?.size).toBe(100);
+  });
+
+  it('不帶 replace 時維持舊的 dedupe 行為（不覆寫、不重複扣配額）', async () => {
+    await handlePutBlob(env, USER, 'blob_d', bytes(100, 1).buffer, 1000);
+    const before = new Uint8Array((await handleGetBlob(env, USER, 'blob_d')).bytes!);
+    const second = await handlePutBlob(env, USER, 'blob_d', bytes(100, 9).buffer, 1001);
+    expect(second.body.deduped).toBe(true);
+    const after = new Uint8Array((await handleGetBlob(env, USER, 'blob_d')).bytes!);
+    expect(Array.from(after)).toEqual(Array.from(before));
+  });
+
   it('超過 8 MiB 被拒（413）', async () => {
     const res = await handlePutBlob(env, USER, 'blob_big', new ArrayBuffer(MAX_BLOB_BYTES + 1), 1000);
     expect(res.status).toBe(413);

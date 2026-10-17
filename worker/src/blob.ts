@@ -21,6 +21,13 @@ export async function handlePutBlob(
   blobId: string,
   bytes: ArrayBuffer,
   now = Date.now(),
+  /**
+   * replace=1：客戶端要求覆寫這顆 blob 的密文。
+   * 為什麼需要：blobId 是內容定址，舊版客戶端每次重傳都換一把隨機金鑰，撞上 dedupe
+   * 就變成「KV 是舊密文、信封是新鑰匙」，之後誰都解不開。v2 客戶端用決定性金鑰重推時，
+   * 把 KV 覆寫成最新密文就能自癒（金鑰是推導出來的，別台也解得開）。
+   */
+  replace = false,
 ): Promise<ApiReply> {
   const size = bytes.byteLength;
   if (size > MAX_BLOB_BYTES) return fail(413, 'blob_too_large', '單檔超過 8 MiB');
@@ -31,7 +38,24 @@ export async function handlePutBlob(
     .bind(blobId, userId)
     .first<{ size: number }>();
   // 內容定址：同一個 id 就是同一份內容，重傳不重複扣配額（也讓重試變成冪等）
-  if (existing) return ok({ blobId, size: existing.size, deduped: true });
+  if (existing && !replace) return ok({ blobId, size: existing.size, deduped: true });
+  if (existing && replace) {
+    // 覆寫密文（修復舊版遺留的「金鑰對不上密文」）。配額只按大小差額調整。
+    const delta = size - existing.size;
+    if (delta > 0) {
+      const quota = await consumeQuota(env, userId, delta);
+      if (!quota.allowed) {
+        return fail(413, 'quota_exceeded', '雲端空間已滿', { quota: { used: quota.used, limit: quota.limit } });
+      }
+    } else if (delta < 0) {
+      await refundQuota(env, userId, -delta);
+    }
+    await env.BLOBS.put(blobKey(userId, blobId), bytes, { metadata: { size } });
+    await env.DB.prepare('UPDATE blobs SET size = ? WHERE blob_id = ? AND user_id = ?')
+      .bind(size, blobId, userId)
+      .run();
+    return ok({ blobId, size, replaced: true });
+  }
 
   const quota = await consumeQuota(env, userId, size);
   if (!quota.allowed) {

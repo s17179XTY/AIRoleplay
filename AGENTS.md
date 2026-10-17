@@ -124,6 +124,10 @@
      断言要写成「存在」而不是「等于某个数」。
    - 账号/同步有第三支端到端探针 `shots/e2e-account.mjs`（gitignore；需要本机 Worker 8787 在跑）：
      注册 → 首次同步 → 用 token 直接 pull → 重新载入 → 错密码不能进面板 → 正确密码解锁。
+   - 多装置：`shots/e2e-multidevice.mjs <port> <装置A origin> <装置B origin>`。用「同一份代码的两个 origin」
+     模擬两台装置（例如 `http://127.0.0.1:5173` vs `http://localhost:5173`，线上用 alias vs `<hash>.pages.dev`）：
+     A 注册并上传 blob → B 全新本机登录 → 拉取/解密/卡片互动页全過。**跑完 E2E 后必须清掉探针 profile**
+     （`C:\Temp\dsh-chrome-probe`）再跑 UI 探针，否则残留的已删除账号 token 会让探针读到账号库、断言错乱。
    - `Runtime.enable` 会回放这个 target 之前的 console，所以**导航之后要先清空 logs 数组**再判定。
      退出前会印一行 JSON，`"pass": true` 才算过。**本地和线上各跑一次。**
 4. `git commit`（中文提交信息，`fix:` / `feat:` / `chore:` 前缀）。提交信息写**为什么**，不只写改了什么。
@@ -230,6 +234,15 @@
 | 上下滚动按钮方向看反了、两个按钮同时出现 | 旧实现只要 `follow === false` 就同时给「回顶/回底」 | 单颗浮钮 + 方向感：往上滚＝向上三角「回到顶部」、往下滚＝三角**向左旋转**成向下「回到底部」；渐入渐出、有阴影、到顶/到底淡出。 |
 | 菜单右上一堆空位、图标带边框 | 菜单写死 `w-44`；⋮ 与上下文图标套了 `.dsh-chip`（自带 border+shadow） | 菜单 `w-max min-w-[6.5rem] whitespace-nowrap`；两个图标按钮改成无边框圆形纯图标；顶部新增 **+ 新对话**（生成中禁用）。 |
 
+### 第四轮使用者实测回報後補上的坑（2026-10-18 第二批：加密层）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| **同步失败，訊息是 `The operation failed for an operation-specific reason`** | 这是 WebCrypto 的 `OperationError`（AES-GCM 认证失败），不是网络错误。同步链路里**唯一没被接住**的 crypto 是 `decryptBlob`：旧版 blob 每次上传随机生成 fileKey，而 blobId 是内容定址、服务器对同内容只保留第一份密文（dedupe）。一旦「KV 已写入但本机 blobState 没存到」「另一台装置重推同内容」「清过站点数据后重推」，信封里的新 fileKey 就永久对不上 KV 里的旧密文 → 任何拉这颗 blob 的装置都会抛这个错，整次同步失败（其他资料也永远同步不了） | 根因修法：blob 改成 **v2 决定性命名（HKDF(DEK, blobId)）**，同内容永远同一把钥匙；上传一律带 `replace=1` 让服务器**覆写** KV 密文；解密先试旧 fileKey 再试 v2（过渡期资料也能开）；单颗 blob 解不开只标 `broken` 并跳过（`migrateBlobKeys` 之后用本地明文自动修复，一次最多 6 颗）。**任何 crypto 异常都不能让整次同步炸掉。** |
+| 旧账号里「封面/头像/互动页」解不开 | 同上的旧格式坏数据；新装置没有明文就真的救不回（只有平台内建内容能自愈） | `ensureSeedCard` 补回「card.json 仍引用但本地缺失」的内建文件（互动页/世界书/内建封面）且不覆盖使用者改动；使用者自己上传的封面/头像需重新上传一次（会走 v2 + replace 覆盖修复云端）。UI 同步讯息会明确提示「有 N 个云端素材无法解密，已跳过」。 |
+| 密码正确却「无法解开加密金鑰」 | `unwrapDek` 的 AES-GCM 失败（云端 wrapped_dek 来自旧版本/损坏） | 登录时单独接住，换成中文可行动提示「用恢复码救援重建金鑰」，不再吐原始 DOMException；`errorMessage()` 也统一把 `OperationError` 翻成人话。 |
+| 探针莫名其妙失败（比如 + 新对话后 chats 数量没变） | E2E 结束时只删了云端账号、没清浏览器里的 token；之后跑 UI 探针时页面处于「已登录/锁定」，写进的是账号库，而探针数的是匿名库 | 跑完账号 E2E **删掉探针 profile 目录**再跑 UI 探针（或探针启动时 `localStorage.clear()`）。 |
+
 ## 7. 数据模型与关键规则
 
 - `messages` 是**树**（`parentId` + `chats.currentLeafId`）：重新生成 = 挂第二个孩子，回溯 = 把 currentLeafId 指回历史节点。
@@ -302,6 +315,8 @@
   `loadCardPackage` 会用 record 引用回填 card.json 里缺失/失效的图片字段（只改内存、不写库）。
   界面解析走 `ui/cards/cardAssets.ts`：path 全等 → basename → 大小写兜底，**头像缺失回退封面**。
   卡片列表的封面是**整卡通栏大图**（16:10），不是小方块。导出卡片**默认不含图**（询问后可含）；「导出全部数据」的备份一定带图。
+  **blob 加密 v2**：fileKey 由 `HKDF(DEK, blobId)` 决定性命名（不再随机），上传带 `replace=1` 覆写 KV；
+  解密先试旧 fileKey 再试 v2；解不开的标 `broken` 跳过、`migrateBlobKeys` 用本地明文自愈。详见 §6 第四轮。
   校验在 `src/core/storage/image.ts`：magic byte 白名单（PNG/JPEG/GIF/WebP）、**拒绝 SVG**、
   原图 ≤10 MB、最长边 ≤4096，再压到封面 512 / 头像 128。
 - **账号分库**：`db` 是可换的连接（`export let db` + `openDatabase/switchDatabase`）。未登录 `dsh-roleplay`，
@@ -316,7 +331,7 @@
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**62 个测试文件 / 436 个用例全绿**，构建通过。
+改之前先跑一遍确认基线：**62 个测试文件 / 444 个用例全绿**，构建通过。
 
 关键回归测试：
 - 装配顺序 / 世界书触发 / 正则替换 / 白名单清洗（含 XSS）/ 卡片 zip 往返 / 酒馆卡互转 / 卡片自愈 / 草稿态不落库 / 布局约束。
@@ -332,6 +347,9 @@
   **秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、**两边都有资料的取舍四步**、两装置端到端一致。
 - 图片：**伪装的 .png 被拒、SVG 被拒、超限被拒、导出可不含图**、**保存后 avatarAssetId 不丢**、
   头像解析 path 全等/basename 兜底/回退封面。
+- 加密/同步：**blob v2 决定性命名**（同内容重复加密都能解）、**旧 fileKey 兼容**、**坏 blob 標 broken 不炸同步**、
+  **替换重推后第三台仍解得开**（旧「换鑰匙」bug 的回归）、**migrateBlobKeys 自愈**、worker `replace=1` 覆写与配額、
+  **内建卡缺失文件自愈且不覆盖使用者改动**。
 - 账号：**解锁密码错不能显示已登录面板**（`unlocked` 判据）、错密码保留 locked + 错误信息、正确密码才出账号面板。
 
 后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs`。
@@ -341,11 +359,11 @@
 
 ### 现在的状态
 
-- 第三轮实测修复后的提交：见 `git log`（本轮含 D1 参数上限、摘要窗口/语义、账号 unlocked、卡片图/头像、UI 三处）。
-- 线上：前端 https://601f15e4.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
-  Worker https://dsh-sync-api.s17179xty.workers.dev （version `72730f34-655d-4102-a630-a4deaf914bd7`）。
-- 测试 62 档 / 436 例全绿；build 无错；两个浏览器探针在**本地与线上**都是 `pass: true`、console 零警告；
-  账号/同步端到端探针 `shots/e2e-account.mjs` 本地与线上都全过（注册→同步→重载锁定→错密码被挡→正确密码解锁）。
+- 第三、四轮实测修复后的提交：见 `git log`（同步 500、摘要语义、unlocked、卡片图/头像、UI、blob v2 加密层）。
+- 线上：前端 https://ae382d0d.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
+  Worker https://dsh-sync-api.s17179xty.workers.dev （version `f70cc890-f8d4-48f2-b517-3547508f1d5b`）。
+- 测试 62 档 / 444 例全绿；build 无错；两个浏览器探针在**本地与线上**都是 `pass: true`、console 零警告；
+  账号/同步端到端探针 `shots/e2e-account.mjs`、多装置探针 `shots/e2e-multidevice.mjs` 本地与线上都全过。
 - 规格与计划：
   `docs/superpowers/specs/2026-10-15-context-summary-mod-images-design.md`、
   `docs/superpowers/plans/2026-10-15-context-summary-mod-images.md`
@@ -363,6 +381,8 @@
 4. **图片压缩走 canvas**，jsdom 里没有 canvas，所以单元测试只覆盖校验逻辑；真实压缩只在浏览器有效。
 5. `docs/superpowers/` 里的旧 spec / plan 没有随第二、三轮改动更新（以本文件 §7 为准）。
 6. 探针脚本的 CDP 截图在 `shots/`（已 gitignore）；重跑同一 profile 会累积资料，断言都写成「存在」。
+7. **旧账号里已损坏的「使用者上传图」只能重传一次**：v2 自愈需要本地有明文；如果本机也清过数据，
+   封面/头像就真的救不回来（平台内建互动页/世界书会由 `ensureSeedCard` 补回）。提醒使用者重新上传即可。
 
 ### 修 bug 的标准流程
 
