@@ -1,61 +1,65 @@
 # AGENTS.md — 本项目的硬规矩与工作方式
 
 > 给后续接手这个仓库的 AI / 人看。改任何东西之前先读这一页。
+> **正在修 bug 的话，直接跳到 §9「接手须知」**，那里写了现在的状态、怎么验、以及还没做的事。
 
 ## 1. 这是什么
 
-一个**纯本地（零后端）的手机端 AI 角色扮演 PWA**。核心玩法：
+一个**手机端 AI 角色扮演 PWA**（未登录＝纯本地，登录＝多一层加密云同步）。核心玩法：
 
    卡片（zip 包）
      └─ ui/index.html  卡片自带的 HTML 互动页（沙箱 iframe）
           用户在里面选 XP / 填设定 → 页面生成【初始信息设定】
      → 点页面里的「复制内容并开始游戏」→ 平台接管复制到剪贴板
      → 用户粘贴到聊天输入框发送
-     → AI 用卡片提示词（前置词 / 提示词 / 后置词）+ 用户贴的初始化信息生成内容
+     → AI 用卡片提示词 + 用户贴的初始化信息生成内容
 
-**主人公设定 / 前情提要 / 初始剧情 / 开场白全部由互动页决定**，卡片里不存这些静态字段。
+**主人公设定 / 前情提要 / 初始剧情 / 开场白全部由互动页决定**，卡片里不存这些静态字段，
+也**不进提示词**（JSON 字段保留只是为了让导入的卡不坏）。
 
-**本地优先**：没登录时就是一个纯本地应用（数据全在 IndexedDB）；登录后多一层**客户端加密的云同步**作为可选加值。同步不是前提，任何时候都不许因为「没登录 / 没网络」挡住玩法。
+**本地优先**：没登录时功能与纯本地版完全一致，数据全在 IndexedDB；登录后云端只作**加密同步后端**。
+任何时候都不许因为「没登录 / 没网络」挡住玩法。
 
 ## 2. 硬约束（违反即视为 bug）
 
 1. **只做手机端 UI**：单一纵列、大点击区、药丸按钮。
-   - **基础规则**：应用外壳必须**铺满可用宽高**（`width: 100%` + `height: 100dvh`），且**不得**有固定宽度 / `max-width`。
-   - **唯一例外**：`@media (min-width: 480px)` 里可以把外壳收成 `max-width: 430px` 并 `margin-inline: auto` 置中——
-     这是使用者明确要的「桌机也看手机比例」。**手机上（< 480px）必须仍然铺满**，门坎不得低于 480px。
-   - 除了这个例外，**禁止**给任何页面或容器加固定宽度；卡片自带的 HTML 互动页（跑在 iframe 里）样式由卡片作者决定，不受此限。
+   - **基础规则**：外壳必须铺满可用宽高（`width: 100%` + `height: 100dvh`），**不得**有固定宽度 / `max-width`。
+   - **唯一例外**：`@media (min-width: 480px)` 里可收成 `max-width: 430px` 并置中。
+     手机上（< 480px）必须仍然铺满，门坎不得低于 480px。
+   - 卡片自带的 HTML 互动页（跑在 iframe 里）样式由卡片作者决定，不受此限。
    - 唯一允许的百分比宽度是气泡那种自适应宽度（如 `max-w-[78%]`）。
-   - 见 `src/ui/layout.test.ts`：它会同时守住「基础规则没有 max-width」与「宽萤幕媒体查询存在且门坎 >= 480px」。
-2. **本地优先（不是"零后端"）**：未登录时功能与纯本地版**完全一致**，数据全在浏览器 IndexedDB（Dexie）；登录后云端只作**加密同步后端**，服务器不得持有明文。跨设备仍随时可用「导出/导入全量备份」。
-3. **卡片是数据，不是代码**：
-   - `src/core/` 四个内核（装配 / 渲染 / 适配 / 存储）**不得 import React**。
-   - `src/ui/` **不得出现提示词拼接与 HTML 解析**。
-4. **`messages.raw` 一旦落库永不修改**；正则、CSS、渲染规则的变化只影响展示层（每次现算）。
-5. **卡片内置页必须跑在 `<iframe sandbox="allow-scripts">`** 里：不给 same-origin、CSP 断网（`connect-src 'none'`），一切数据经 postMessage 桥。卡片拿不到 API Key，也碰不到数据库。
-6. **不引第三方模型 SDK**：要自定义 baseURL / 请求头 / 参数能力矩阵，SDK 只会挡路。
-7. 模型由用户自己接，**不承诺"所有服务商都能连"**；浏览器直连失败要给出「CORS / 网络 / Base URL」三种可能。
-8. **服务器零知识**（登录/同步功能）：
-   - `worker/` 里**不得出现任何解密代码**，日志不得输出 `ciphertext`；云端只存密文与 `kind / id / rev / 时间 / 大小`。
-   - `providers.apiKey` 与 `providers.extraHeaders`（后者常被塞自定义 `Authorization`）**永不上云**，见 `src/core/sync/kinds.ts` 的 `sanitizeForSync`，有测试守着。
-   - `src/core/sync/` 与 `src/core/` 同级：**不得 import React**，也不得依赖 UI 才能跑（同步引擎必须能只用 Dexie + WebCrypto 测起来）。
-   - 加密参数（PBKDF2 迭代数等）一律由调用端传入，**不许读模块层常量**，否则测试没法注入低成本参数（600k 迭代会让测试跑成几分钟）。
+   - `src/ui/layout.test.ts` 同时守住「基础规则没有 max-width」与「宽萤幕媒体查询门坎 >= 480px」。
+2. **本地优先**：云端只存密文，服务器不得持有明文。
+3. **卡片是数据，不是代码**：`src/core/` 四个内核不得 import React；`src/ui/` 不得出现提示词拼接与 HTML 解析。
+4. **`messages.raw` 一旦落库永不修改**；正则 / CSS / 渲染规则的变化只影响展示层（每次现算）。
+5. **卡片内置页必须跑在 `<iframe sandbox="allow-scripts">`**：不给 same-origin、CSP 断网，一切经 postMessage 桥。
+6. **不引第三方模型 SDK**。
+7. 模型由用户自己接；直连失败要给出「CORS / 网络 / Base URL」三种可能。
+8. **服务器零知识**：`worker/` 不得有解密代码、日志不得输出 `ciphertext`；
+   `providers.apiKey` 与 `extraHeaders` 永不上云（`kinds.ts` 的 `sanitizeForSync`，有金丝雀测试）；
+   加密参数一律由调用端传入（测试要注入低成本 KDF）。
+9. **严格一对 + 生成期间锁输入**（使用者 2026-10-15 定稿，见 §7）：
+   使用者发一句 → AI 回一句，AI 没回完之前**不能发第二句**，也不许出现两条连续的使用者讯息。
 
 ## 3. 目录地图
 
-    src/core/assembler/   装配内核：条目模型、宏、世界书触发、token 预算、装配顺序、
-                          window.ts（上下文窗口与成对规则）、summarize.ts（摘要压缩请求）
+    src/core/assembler/   装配内核：条目模型、宏、世界书触发、token 预算、装配顺序（assemble.ts）、
+                          window.ts（上下文窗口与成对规则）、summarize.ts（摘要压缩请求与解析）
     src/core/render/      渲染内核：思维链/记忆/选项提取、白名单清洗、渲染管线
-    src/core/providers/   适配内核：OpenAI 兼容、Anthropic、SSE 解析、mock、能力矩阵
-    src/core/storage/     存储内核：Dexie schema、卡片仓库(zip)、摘要库、备份、seed、
-                          migrate.ts（旧记忆一次性清理）、modRepo.ts（MOD）、image.ts（图片校验）
-    src/core/cards/       卡片规格、zip 打包、酒馆 PNG 卡互转、模板引擎、沙箱桥、正则
-    src/core/sync/        同步内核：KDF/信封加解密、blob、表↔信封映射、outbox 收敛点、HTTP 客户端、同步引擎
+    src/core/providers/   适配内核：OpenAI 兼容、Anthropic、SSE 解析、mock、能力矩阵、默认参数
+    src/core/storage/     存储内核：Dexie schema、卡片仓库(zip)、摘要库(memoryStore)、备份、seed、
+                          migrate.ts（旧记忆一次性清理）、modRepo.ts（MOD）、image.ts（图片校验与压缩）
+    src/core/cards/       卡片规格(spec.ts)、zip 打包(package.ts)、酒馆 PNG 卡互转、模板引擎、沙箱桥、正则
+    src/core/sync/        同步内核：KDF/信封加解密、blob、表↔信封映射(kinds)、outbox 收敛点、HTTP 客户端、引擎(engine)
     worker/               独立的 Cloudflare Worker（wrangler.jsonc + migrations + src + test）；服务器零知识
-    src/ui/               手机端界面：play / cards / settings / components
-    src/state/            Zustand：useSession（当前卡片与会话）、useNav、useSetting（共享快取）、useSync（账号/同步）、useData（换库广播）
+    src/ui/play/          PlayScreen（聊天）、Composer（输入列 + 上下文图标）、MessageBubble、CardPagePanel
+    src/ui/cards/         CardListScreen、CardEditorScreen、ImageSlots、draft.ts（草稿↔卡包）、useAssetUrl
+    src/ui/settings/      SettingsScreen、AccountSection、ModSection、DevicesPanel、ConflictPanel
+    src/state/            Zustand：useSession（会话/上下文/摘要）、useNav、useSetting、useSync（账号/同步）、useData（换库广播）
     src/assets/cards/     内置卡的原始文件（ui.html 用 ?raw 打进包里）
+    scripts/              真实浏览器验收探针（cdp-ui-check.mjs / cdp-ui-check2.mjs）
     docs/superpowers/     设计文档与实施计划
-    docs/reference/       参考素材（含从风月爬下来的原版卡片页，仅供比对）
+    docs/reference/       参考素材（从风月爬下来的原版卡片页，仅供比对）
 
 ## 4. 常用命令
 
@@ -65,46 +69,65 @@
 
 账号/同步（后端是独立的 Worker，需要 Cloudflare 账号；本机开发不需要部署）：
 
-    npm run d1:migrate:local                      # 建本机 D1（在 .wrangler/state，已 gitignore）
-    npm run worker:dev                            # 本机起 Worker（http://127.0.0.1:8787）
-    node worker/smoke.mjs                         # 对 wrangler dev 打一轮端到端冒烟（31 项）
-    node worker/scripts/mint-invite.mjs "给 alice" # 产生一次性邀请码
-    npm run worker:deploy / d1:migrate:remote      # 上线用（blob 存储用 KV，不需要付费开 R2）
+    npm run d1:migrate:local                       # 建本机 D1（在 .wrangler/state，已 gitignore）
+    npm run worker:dev                             # 本机起 Worker（http://127.0.0.1:8787）
+    node worker/smoke.mjs                          # 对 wrangler dev 打端到端冒烟（31 项）
+    node worker/scripts/mint-invite.mjs "给 alice"  # 产生一次性邀请码
 
     前端指向后端：.env.local 写 VITE_SYNC_API=http://127.0.0.1:8787（本机）或线上 Worker 网址（部署用）。
-    smoke.mjs 可对正式环境跑：SMOKE_BASE=https://<worker>.workers.dev ADMIN_SECRET=<secret> node worker/smoke.mjs
 
-> **Windows 注意**：本机环境的 `node` 若是包装脚本（例如 DSH 的 `node.cmd`），`npm run worker:*`
-> 会报 `Unknown arguments`——那是 npm 的 `.cmd` shim 传参问题，不是脚本写错。改从 PowerShell 直接
-> 呼叫 `wrangler ...`（`.ps1` shim 内部写的是 `node.exe`，会绕开包装脚本）即可。
+> **Windows 注意**：本机 `node` 若是包装脚本（DSH 的 `node.cmd`），`npm run worker:*` 会报
+> `Unknown arguments`——那是 npm 的 `.cmd` shim 传参问题，不是脚本写错。改从 PowerShell 直接
+> 呼叫 `wrangler ...`，或验证脚本用 `node.exe`。
+
+### 部署（两个都做，顺序不能反）
+
+    # 1) Worker（改了 worker/ 才需要）
+    $env:CLOUDFLARE_ACCOUNT_ID='1e97aa4de19bc68f8a56272117616e6b'
+    wrangler deploy --config worker/wrangler.jsonc
+    $env:SMOKE_BASE='https://dsh-sync-api.s17179xty.workers.dev'; $env:ADMIN_SECRET=(Get-Content shots\admin-secret.txt).Trim()
+    & "C:\Program Files\nodejs\node.exe" worker/smoke.mjs        # 31 项，必须全过
+
+    # 2) 前端（Pages）
+    # 先确认 .env.local 的 VITE_SYNC_API 指向正式 Worker，再 build，否则线上会连本机
+    Set-Content .env.local "VITE_SYNC_API=https://dsh-sync-api.s17179xty.workers.dev`nADMIN_SECRET=<secret>" -NoNewline
+    npm run build
+    wrangler pages deploy dist --project-name air-roleplay --branch main --commit-dirty=true
+    # 收工：把 .env.local 改回 http://127.0.0.1:8787（.env.local 已 gitignore，不会进提交）
+
+    线上：https://air-roleplay.pages.dev （每次部署会给一个新的 <hash>.air-roleplay.pages.dev）
+    Worker：https://dsh-sync-api.s17179xty.workers.dev
+    admin secret：`shots/admin-secret.txt`（shots/ 已 gitignore）
 
 ## 5. 每次改完必须做的四件事
 
-1. `npm run test` —— 全绿。修 bug 要**先写一个会失败的测试**再修。
+1. `npm run test` —— 全绿。**修 bug 要先写一个会失败的测试再修。**
 2. `npm run build` —— 类型检查 + 打包无错。
 3. **UI 改动必须用无头浏览器实测**（不能只看代码）：
-   - 后台启动 `npm run dev`，再起一个 Chrome headless（带 `--remote-debugging-port`、独立的 `--user-data-dir`）；
+   - 后台起 `npm run dev`；再起一个 Chrome headless（`--headless=new --remote-debugging-port=<port>`
+     + 独立的 `--user-data-dir`，窗口 390×844）；
    - 用 CDP 的 `Runtime.evaluate` 驱动真实点击/输入，`Page.captureScreenshot` 截图；
-   - 宽度类问题一定要量：`document.querySelector('.dsh-shell').getBoundingClientRect().width` 对比 `window.innerWidth`，
-     并检查 `documentElement.scrollWidth > clientWidth`（横向溢出）。
-   - 现成探针：`node scripts/cdp-ui-check.mjs <port> <url>`（走 `node.exe`，见 §4 的 Windows 注意；
-     截图会写到 gitignore 掉的 `shots/`）。
-     它一次验完：字级即时生效、输入框到导航的间距、记忆托管开关与说明、等待提示 + 停止钮、
-     记忆区块仍在讯息里、`button button` 必须为 0、往上滑不再被拉回底部 + 「回到底部」、以及 **console 零警告**。
-     `Runtime.enable` 会回放这个 target 之前的 console，所以**导航之后要先清空 logs 数组**再判定。
-     退出前它会印一行 JSON，`"pass": true` 才算过。
-   - 第二个探针：`node scripts/cdp-ui-check2.mjs <port> <url>`，验的是上下文 HUD（条数 + token + 分项明细）、
-     设置页的上下文模式/条数/摘要开关/MOD 分节/上下文大小滑块、聊 4 轮后**真的生成摘要**、
-     聊天页的 MOD 面板、右下角两个**只有图标**的滚动钮、对话列表的右侧图标与「对话N」命名，同样要求 console 零警告。
-     两个探针都会用同一个浏览器 profile，所以**重复跑时断言会看到上一轮留下的资料**（例如摘要条数累加）——
+   - 宽度类问题一定要量：`.dsh-shell` 的 `getBoundingClientRect().width` 对比 `window.innerWidth`，
+     并检查 `documentElement.scrollWidth > clientWidth`。
+   - 探针一：`node scripts/cdp-ui-check.mjs <port> <url>`（走 `node.exe`；截图写到 gitignore 的 `shots/`）。
+     验：字级即时生效、输入框到导航的间距、等待提示 + 停止钮、记忆区块仍在讯息里、
+     `button button` 必须为 0、往上滑不再被拉回底部、**console 零警告**。
+   - 探针二：`node scripts/cdp-ui-check2.mjs <port> <url>`。验：
+     `body` 底色是白的、底部导航按钮 ≥ 56px、顶栏**不含**「上下文」二字、
+     上下文图标在输入框与发送键**之间**且显示数字、按下才出明细（分项 + 合计 + 百分比）、
+     ⋮ 菜单按下才展开（含 对话/MOD/记忆）、设置页的上下文模式/条数/摘要开关/压缩阈值/MOD 分节/上下文大小滑块、
+     聊 4 轮后**真的生成摘要**、MOD 面板、右下角两个只有图标的滚动钮、对话列表右侧图标与「对话N」命名。
+   - 两个探针都会用同一个浏览器 profile，**重复跑会看到上一轮留下的资料**（摘要条数会累加）——
      断言要写成「存在」而不是「等于某个数」。
-4. `git commit`，中文提交信息，`fix:` / `feat:` / `chore:` 前缀。
+   - `Runtime.enable` 会回放这个 target 之前的 console，所以**导航之后要先清空 logs 数组**再判定。
+     退出前会印一行 JSON，`"pass": true` 才算过。**本地和线上各跑一次。**
+4. `git commit`（中文提交信息，`fix:` / `feat:` / `chore:` 前缀）。提交信息写**为什么**，不只写改了什么。
 
 ## 6. 已知坑（都踩过）
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| dev server 自己崩掉，报 EBUSY watch | Windows 上 fs.watch 撞到被占用/瞬时的文件（编辑器临时目录、`.env.local`、其它进程正在写的文件）；Vite 没给 FSWatcher 挂 error 监听，Node 直接把进程干掉 | 双保险：① `vite.config.ts` 的 `server.watch.ignored` 忽略临时文件/密钥/构建产物；② 插件 `dsh-watch-error-guard` 接管 `watcher.on('error')`，忽略这类瞬时错误（已用「反复创建+删除被监视文件」压测：8 轮后 dev server 仍存活） |
+| dev server 自己崩掉，报 EBUSY watch | Windows 上 fs.watch 撞到被占用/瞬时的文件；Vite 没给 FSWatcher 挂 error 监听 | ① `vite.config.ts` 的 `server.watch.ignored`；② 插件 `dsh-watch-error-guard` 接管 `watcher.on('error')` |
 | 某些页面比别的页面窄 | 曾经给外壳加过 max-width；或滚动条占位 | 外壳铺满 + 隐藏滚动条；layout.test.ts 守住 |
 | 字号设置不生效 | 只改了外层 div，被内部固定 px 覆盖 | 统一走 CSS 变量 `--dsh-fs`，内部用 em |
 | 「卡片不存在或已损坏」 | 早期版本只写了卡片索引行、没写 card.json | `ensureSeedCard()` 自愈；内置卡版本升级自动覆盖 |
@@ -114,90 +137,198 @@
 | 沙箱里 execCommand('copy') 可能被拦 | iframe 无 same-origin | 桥脚本拦截 `#copy-button`，文本回传宿主写剪贴板 |
 | 复制后 AI 没反应 | 忘了我方不自动发送 | 流程就是「用户复制 → 自己粘贴发送」，别改成自动注入 |
 
-同步/后端相关的坑（都实测过，细节见 `docs/superpowers/plans/2026-10-14-account-sync-core.md` 的三节「执行期间修正」）：
+同步/后端相关的坑（细节见 `docs/superpowers/plans/2026-10-14-account-sync-core.md` 的「执行期间修正」）：
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| Dexie middleware 完全拦不到写入 | dbcore 堆栈在 `open()` 时定版；open 之后才 `use()` 无效（清 `_core` 也没用） | 新实例走 `onDatabaseCreated` 挂勾（建立时、还没 open）；已开的库只能 `close()` → `use()` → `open()` |
-| outbox 补写喷 `NotFoundError` | IndexedDB 的交易范围在建立时就固定，塞不进别的表 | `db.ts` 包一层 `_createTransaction`，把 `syncOutbox` 并进每个读写交易；另有 `ignoreTransaction` 保底 |
-| 第二次推送被误判成冲突 | 曾在记录里存 `__rev`，但 App 的正常写入是整笔覆盖，一写就抹掉 | 已同步版本改存独立表 `syncRev`（`[kind+id]`） |
-| `keyOf` 算出 `"undefined"` | `settings` 是 14 张表里**唯一主键叫 `key`** 而不是 `id` 的 | `kinds.keyOf` 对它单独处理；补了「14 种 kind 都算得出非 undefined id」的测试 |
-| 多装置测试 `DatabaseClosedError` | `switchDatabase` 会关掉前一个连接 | 测试里用 `openDatabase`（不关旧的），两个库同时活着 |
-| `npm run worker:*` 报 `Unknown arguments` | 本机 `node` 是包装脚本，npm 的 `.cmd` shim 传参被窜改 | 从 PowerShell 直接调 `wrangler ...`；验证脚本可用 `node.exe` |
-| `wrangler` 起不来：`compatibility date ... newest supported is ...` | 本机 workerd 只支援到前一天 | `compatibility_date` 用 `2026-10-13` |
-| `wrangler` 报 `Unknown arguments` 且指向 config | `migrations_dir` 放错层级 | 它属于 **binding 内部**（`d1_databases[].migrations_dir`），不是顶层 |
-| `wrangler r2 bucket create` 回 `code: 10042` | 账号没启用 R2（启用必须绑付款方式） | **已改用 Workers KV**：含在免费方案内（1 GB/账号、单值 25 MiB、写入 1000 次/日），不需要付款方式 |
-| `import.meta.url` 在测试里喷 `The URL must be of scheme file` | vitest 的 jsdom 环境模块 URL 不是 `file:` | 用 `process.cwd()` 定位（见 `worker/test/helpers/migration.ts`） |
-| 测试随机失败，断言是「密文不含 `sk-` / `18`」 | base64url 密文本来就可能凑出短字符串 | 短字符串一律不比对；要验「真的加密了」就写**解密往返断言** |
-| blob 上传后另一端立刻取不到 | KV 是**最终一致**的（写入后全球生效最多 60 秒） | `GET /api/blob/:id` 一律回 404 让客户端稍后重试；引擎把这种情况当 `pending`，**不得**标记失败或删掉本地参照 |
-| blob 的 key 用了内容哈希做全局去重 | 两个账号有同一个文件时，「有同一个文件」这件事会从 key 泄漏 | key 一律 `<userId>/<blobId>`，不做跨账号去重 |
-| 重试后先前推上云的信封永远解不开 | 每次重新加密都会换随机的 `fileKey` | `fileKey` 存在 `blobState.fileKey` 并**重用**；`state === 'uploaded'` 就跳过重复上传 |
-| 走了 blob 但服务器仍报「单笔超过 256 KiB」 | `sanitizeForSync` 会回传整列，明文（如 1.25 MB 的卡片页）跟着进信封 | 决定走 blob 后必须 `delete data.text / data.bytes`（`engine.pushPending`） |
-| 前端调用新端点时服务器回「缺少必要欄位」 | store 里字段名写错（`recoveryAuthKey` vs `newRecoveryAuthKey`），测试跑得过但接口对不上 | **`npm run build` 的类型检查会抓到**——这就是「build 必须无错」不可跳过的原因 |
-| 冒烟脚本后半段全部 401 | 脚本前面已经 logout 撤销了 session，后面却继续用同一个 token | 冒烟脚本自己要在 logout 之后重新登入（`session` 变量），别复用死掉的 token |
-| 注册成功但用户说「没看到恢复码」 | 恢复码对话框原本写在「未登录」分支里，注册成功后组件立刻切到已登录分支 → 对话框消失 | 对话框必须挂在组件最外层（三个分支都带），否则等于永久失去救援能力；有测试守着 |
-| 本机 vite dev 打本机 Worker 被 CORS 挡 | `vars.ALLOWED_ORIGINS` 只列了 Pages 域名 | 本机来源、预览部署网域 `<hash>.air-roleplay.pages.dev`、区网 IP 都由 `isAllowedOrigin()` 模式匹配放行（`worker/src/router.ts`） |
-| **手机上注册/同步一律 `Load failed`，但登入正常** | **两个 bug 叠在一起**：① `blobs` 表主键只有 `blob_id`（全域唯一），逻辑却是「每使用者一份」——别人上传过同样内容（内容定址 → 同一 blobId，例如人人开局的內建卡片页）时，新使用者 INSERT 撞主键 → 500；② 最外层的 500 **没带 CORS 标头**，浏览器把整个回应丢掉，于是伺服器错误被伪装成网络错误。 | ① migration `0002_blobs_per_user.sql` 改成复合主键 `(user_id, blob_id)`，插入用 `INSERT OR IGNORE` + 变更数判断（并发安全、不重复扣配额）；② `index.ts` 的 catch 必须带 `corsHeaders(...)`。**教训：任何错误回应都要带 CORS 标头，否则你只会看到一个假的网络错误。** |
-| 同一个 KV key 被并发写入 | Cloudflare KV 对**同一个 key** 限制每秒 1 次写入 | 客户端 `ensureBlobUploaded` 用 in-flight map 合并同一个 blob 的上传；服务端 blob 路径也已幂等 |
-| 邀请码手抄打错就白费 | 资料库存的是 `sha256(码)`，差一个字元完全对不上 | 客户端与服务端都做 `canonicalInviteCode()`（NFKC → 大写 → 只留英数 → 每 4 字补破折号）；服务端同时试「正规范化」与「原样」两种杂湊，兼容早期或手塞的码 |
-| `wrangler d1 execute --json` 报 `code: 7403 未授权` | 这台机器上的 wrangler 走 `--json` 是另一条 API 路径 | 去掉 `--json` 就正常 |
+| Dexie middleware 完全拦不到写入 | dbcore 堆栈在 `open()` 时定版 | 新实例走 `onDatabaseCreated`；已开的库只能 `close()` → `use()` → `open()` |
+| outbox 补写喷 `NotFoundError` | IndexedDB 交易范围在建立时就固定 | `db.ts` 包一层 `_createTransaction`，把 `syncOutbox` 并进每个读写交易 |
+| 第二次推送被误判成冲突 | 曾在记录里存 `__rev`，一写就抹掉 | 已同步版本改存独立表 `syncRev`（`[kind+id]`） |
+| `keyOf` 算出 `"undefined"` | `settings` 是唯一主键叫 `key` 而不是 `id` 的表 | `kinds.keyOf` 对它单独处理；有测试守 |
+| 多装置测试 `DatabaseClosedError` | `switchDatabase` 会关掉前一个连接 | 测试里用 `openDatabase`（不关旧的） |
+| `wrangler` 起不来：`newest supported is ...` | 本机 workerd 只支援到前一天 | `compatibility_date` 用 `2026-10-13` |
+| `wrangler` 报 `Unknown arguments` 且指向 config | `migrations_dir` 放错层级 | 它属于 **binding 内部**（`d1_databases[].migrations_dir`） |
+| 账号没启用 R2 → `code: 10042` | 启用 R2 必须绑付款方式 | **已改用 Workers KV**（免费额度够用） |
+| `import.meta.url` 在测试里喷 `The URL must be of scheme file` | vitest 的 jsdom 模块 URL 不是 `file:` | 用 `process.cwd()` 定位 |
+| 测试断言「密文不含 `sk-`」随机失败 | base64url 密文本来就可能凑出短字符串 | 短字符串一律不比对；要验加密就写**解密往返断言** |
+| blob 上传后另一端立刻取不到 | KV 最终一致（最多 60 秒） | `GET /api/blob/:id` 一律回 404；引擎当 `pending`，**不得**标失败或删本地参照 |
+| blob key 用内容哈希做全局去重会泄漏「两个账号有同一文件」 | — | key 一律 `<userId>/<blobId>` |
+| 重试后先前推上云的信封永远解不开 | 每次重新加密会换随机 `fileKey` | `fileKey` 存 `blobState.fileKey` 并**重用** |
+| 走了 blob 但仍报「单笔超过 256 KiB」 | `sanitizeForSync` 回传整列，明文跟着进信封 | 决定走 blob 后必须 `delete data.text / data.bytes` |
+| 前端调新端点回「缺少必要欄位」 | store 字段名写错，测试跑得过但接口对不上 | **`npm run build` 的类型检查会抓到**——这就是 build 必须无错的原因 |
+| 冒烟脚本后半段全 401 | 脚本前面 logout 撤销了 session，后面继续用同一个 token | 冒烟脚本在 logout 之后要重新登入 |
+| 注册成功但「没看到恢复码」 | 对话框写在「未登录」分支里，注册成功后组件立刻切到已登录分支 | 对话框必须挂在组件最外层（三分支都带） |
+| 本机 dev 打本机 Worker 被 CORS 挡 | `ALLOWED_ORIGINS` 只列了 Pages 域名 | `isAllowedOrigin()` 模式匹配放行本机/预览网域/区网 IP |
+| **手机上注册/同步一律 `Load failed`，但登入正常** | 两个 bug 叠加：① `blobs` 主键只有 `blob_id`，别人传过同样内容 → 撞主键 → 500；② 最外层 500 **没带 CORS 标头**，浏览器把整个回应丢掉，伺服器错误被伪装成网络错误 | ① migration `0002_blobs_per_user.sql` 复合主键 `(user_id, blob_id)` + `INSERT OR IGNORE`；② catch 必须带 `corsHeaders(...)`。**任何错误回应都要带 CORS 标头。** |
+| 同一个 KV key 被并发写入 | KV 对同一个 key 限制每秒 1 次写入 | `ensureBlobUploaded` 用 in-flight map 合并 |
+| 邀请码手抄打错就白费 | 库里存的是 `sha256(码)` | 两端都做 `canonicalInviteCode()`；服务端同时试正规范化与原样 |
+| `wrangler d1 execute --json` 报 `code: 7403 未授权` | 这台机器的 wrangler 走 `--json` 是另一条 API 路径 | 去掉 `--json` |
+| `npm run test` 偶发 `ERR_IPC_CHANNEL_CLOSED`（用例全过但退出码 1） | Windows 上 tinypool 的 worker 收尾竞态 | `vite.config.ts` 用 `pool: 'forks'` + `singleFork: true` + `fileParallelism: false`。**不要改回去。** |
 
-### 使用者实测回報後補上的坑（2026-10-15）
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| **同步一次，本机 API Key 就被清空** | `sanitizeForSync('provider')` 本来就不带 `apiKey` / `extraHeaders`（这是对的），但 `applyRemoteRecord` 直接 `table.put(row)` —— 一封不含秘密的信封把本地整列覆盖掉，秘密就没了。同一类错误还有 `cardFile.text` 与 `asset.bytes`（走 blob，信封只有 `__fileKey`） | 套用远端一律走 `kinds.mergeRemoteRow(kind, remote, local)`：以本地列为底、只覆盖信封真的带来的栏位；provider 还补空字串，免得 UI 拿到 `undefined`。**同步永远只能「补」，不能把本地的东西变少。** |
-| 新装置同步完「卡片打开是空的、图全不见了」 | `ensureBlobLocal()` 写好了却**没有任何生产代码呼叫它**：拉到的卡片页/素材只有中继资料，明文永远补不回来（KV 最终一致，pull 当下还可能 404） | `pullChanges()` 收尾调 `fetchRemoteBlobs()`，扫 `blobState.state === 'remote'` 的条目抓回来；抓不到就留着，下次同步再试。因此 `blobState` 必须记 `kind`（否则从 refId 无法反查是哪张表） |
-| 「近期记忆出现后又消失，生成完就没了」 | `extractMemories()` 解析成功后 `details.remove()`。串流途中条目还没写完 → 凑不出 `[1]…` → 不移除、看得见；生成结束 → 移除 → 消失 | **不要在渲染层移除记忆区块**。记忆要留在 AI 讯息里显示；回注提示词时另有 `stripMemoryAndThink()` 负责剥离，不会重复 |
-| 整段 AI 回覆是一个**空气泡**（只有内距、没有内容） | `renderMessage()` 只走 `root.children`（元素）。回覆完全没标籤时 blocks 是空的 | 改走 `root.childNodes`：纯文字产出 `{kind:'text'}` 区块，交给 React 跳脱 + `whitespace-pre-wrap` 保留换行。**任何渲染管线都要问一句：最朴素的那一种输入会长怎样？** |
-| **按下「停止」没反应、生成照样跑** | `AbortController` 在 `streamReply()` 里才建立，而 `set({streaming:true})` 到真正串流之间还有一串 await（读正则、读记忆、组提示词）。这段空窗按停止时 `currentAbort` 还是 null | `send()` / `regenerate()` **同步**建立 controller 并挂到 `currentAbort`，再交给 `streamReply`；`streamReply` 开头先检查 `signal.aborted`。有测试专门按这个时序守 |
-| 「重新生成」会多插一条一模一样的**使用者**讯息 | `regenerate()` 是「把 leaf 指回去 → 再叫一次 `send()`」，而 `send()` 必定新增一列使用者讯息 | 拆出 `streamReply()`：`send` 与 `regenerate` 共用它，差别只在「挂在谁下面」与「这一轮的使用者输入是什么」 |
-| **同步完 UI 没更新，看起来像资料没了** | 三个原因叠在一起：① 登入/登出会 `switchDatabase()` 换整个 IndexedDB 连线，但没有任何东西通知画面重读；② `runSync` 套用远端变更也不通知；③ 重新载入页面时连的是**预设库**，`refresh()` 没有切回帐号库 | 新增 `state/useData.ts`（`bumpData()` 广播）+ `useSession.reload()`；`switchDatabase` / `runSync(applied>0)` / `refresh()` 都要发；`AppShell` 启动就跑 `refresh()` 把连线切回帐号库 |
-| 字级设定点了没反应 | `useSetting()` 每个呼叫点各有一份 `useState`——AppShell（写 `--dsh-fs`）与设定页（那排按钮）互不知情 | `useSetting` 改成模组层共享快取 + 订阅者广播；换库/恢复预设时用 `resetSettingCache()` 作废并重读 |
-| 输入框下面多一大块空白 | `Composer` 与 AppShell 底部导航**都**加了 `.safe-bottom`，安全区留白叠了两份 | 只有画面最底部那一条能吃 `safe-bottom`；`Composer` 只留一般内距。量测方式：`input.bottom` 到 `nav.top`（CDP 探针会验） |
-| 记忆条数栏位「删掉就自己弹回 0，打不了字」 | `<input type="number" value={number}>` + `Number(e.target.value)`：空字串变成 `0`，受控 input 立刻被写回 0 | 状态存**字串**、`type="text"`，只在按保存时验证（`1–50` 的整数）；预设 6 条 |
-| `<button>` 里包 `<button>`（React 警告，点击也可能被吃错） | 气泡外层本来是 `<button>`，而内容里有折叠面板的展开钮与选项钮 | AI 气泡外层改 `div role="button"`；真按钮才用 `<button>`。CDP 探针会数 `button button` 必须为 0 |
-
-### 上下文窗口 / 摘要库 / MOD / 图片 这一轮补上的坑（2026-10-15 第二批）
+### 使用者实测回報後補上的坑（第一批）
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 「窗口少一条也不肯整个出去」 | 第一版 `computeWindow` 写成了「向内扩」：把掉出去的那半条又拉回窗口，与 spec 的「向外扩」相反 | 规则是**把整个交换都推到窗口外**（使用者举的例子就是：第 n 条用户消息出去了，第 n-1 条 AI 消息也要一起出去）。有测试按这两种语义分别守 |
-| AI 把摘要当成最新资讯 | 摘要如果放在历史之后、或没有明确标注，模型会以为那是刚刚发生的事 | 摘要注入在 **before-history（紧贴历史之前）**，标题写死「以下内容发生在当前对话之前，不是最新消息」，末尾再加一行「以下是最近的原文对话」 |
-| 摘要把玩家的选择写成了 AI 自己的 | 压缩时把整段揉成一段文字 | 压缩输出**必须分「用户：」「叙事：」两段**，解析失败时整段当叙事并在 UI 标注「格式未识别」；注入时也分开 |
-| 摘要生成到一半使用者又发了一句 | 摘要要读当前上下文，中途改世界线就对不上 | 压缩期间 `summarizing = true`，`send()` 直接 return；取消则不写入、下次重试 |
-| 模型一直失败 → 那段对话凭空消失 | 失败就只是跳过 | 连续失败 3 次退化为**本地骨架摘要**（记下第 X–Y 条与用户当时的输入）。**宁可粗糙也不能丢** |
-| 旧记忆条目清不干净（换台装置又回来） | `clear()` 走 deleteRange，outbox 收敛点刻意不对它产生墓碑 | 迁移必须**逐条 `delete(id)`**；测试断言墓碑确实产生 |
-| 「两边都有资料」在每次重新登录都被问一次 | 判据只看「两边非空」——同一台装置本来两边就是同一批资料 | 加判据：**这个库有没有同步游标**。有游标＝这台装置同步过，直接拉；没有游标 + 本地非空 + 云端非空，才是真的「两个来源第一次碰面」 |
-| 选了「以本地为准」结果还是云端赢 | pull 会先把云端内容写进本地表 | 四步不能省：**拍快照 → 拉一遍拿 rev → 用快照盖回去 → 推上去** |
-| 冲突「覆盖回去」之后又冲突一次 | 只写回本地、没动 rev，下一轮 push 的 baseRev 还是对不上 | 覆盖回去时把本地 rev **对齐到那一版**（`setRev(kind, id, item.rev)`），下一次推送才会被接受 |
-| 把 HTML 改名成 `.png` 就能上传 | 只看副檔名 / 只信 `file.type` | **magic byte 白名单**（PNG/JPEG/GIF/WebP），认不出来一律拒；**SVG 单独拒绝**（可以带脚本）；再加体积与边长上限 |
-| `npm run test` 里 `URL.createObjectURL is not a function` | jsdom 没实作它，而图片预览要用 | 在 `src/test/setup.ts` 补一个假的（跟 `crypto.subtle` 一样处理） |
-| 设置页「点了一下又自己跳回旧值」 | `refresh()` 是异步的，使用者在它 resolve 之前点选就会被落地的旧值盖掉 | 加 `formTouchedRef`：**动过的栏位不再被 refresh 覆盖**，保存后再交还控制权。这是真的 UX bug，不是测试问题 |
+| **同步一次，本机 API Key 就被清空** | `sanitizeForSync('provider')` 本来就不带秘密（对的），但 `applyRemoteRecord` 直接 `table.put(row)` —— 一封不含秘密的信封把本地整列覆盖掉。同类还有 `cardFile.text`、`asset.bytes` | 套用远端一律走 `kinds.mergeRemoteRow()`：以本地列为底、只覆盖信封真的带来的栏位。**同步只能「补」，不能把本地的东西变少。** |
+| 新装置同步完「卡片打开是空的、图全不见」 | `ensureBlobLocal()` 写好了却没有生产代码呼叫它 | `pullChanges()` 收尾调 `fetchRemoteBlobs()`；抓不到就留着下次再试。因此 `blobState` 必须记 `kind` |
+| 「近期记忆出现后又消失」 | 渲染层 `details.remove()` 把记忆区块移除了 | **不要在渲染层移除记忆区块**；回注时另有 `stripThink()` 剥离 |
+| 整段 AI 回覆是一个**空气泡** | `renderMessage()` 只走 `root.children`，纯文字输入 blocks 为空 | 改走 `root.childNodes`，纯文字产出 `{kind:'text'}`。**任何渲染管线都要问：最朴素的那种输入会长怎样？** |
+| **按下「停止」没反应** | `AbortController` 在 `streamReply()` 里才建立，而 `set({streaming:true})` 到真正串流之间还有一串 await | `send()` / `regenerate()` **同步**建立 controller 挂到 `currentAbort`；`streamReply` 开头先检查 `signal.aborted` |
+| 「重新生成」会多插一条一模一样的**使用者**讯息 | 旧做法是「把 leaf 指回去 → 再叫一次 `send()`」 | 拆出 `streamReply()` / `runTurn()`：send / regenerate / branchTo 共用，差别只在「挂在谁下面」与「这轮输入是什么」 |
+| **同步完 UI 没更新，看起来像资料没了** | 换库 / 套用远端都没有通知画面重读；重新载入页面连的是预设库 | `state/useData.ts`（`bumpData()`）+ `useSession.reload()`；`switchDatabase` / `runSync(applied>0)` / `refresh()` 都要发 |
+| 字级设定点了没反应 | `useSetting()` 每个呼叫点各有一份 `useState` | 改成模组层共享快取 + 订阅者广播；换库时 `resetSettingCache()` |
+| 输入框下面多一大块空白 | `Composer` 与底部导航**都**加了 `.safe-bottom` | 只有画面最底部那一条能吃 `safe-bottom` |
+| 记忆条数栏位「删掉就自己弹回 0」 | `<input type="number" value={number}>` + `Number('')` = 0，受控 input 立刻被写回 | 状态存**字串**、`type="text"`，只在按保存时验证 |
+| `<button>` 里包 `<button>` | 气泡外层本来是 `<button>` | AI 气泡外层改 `div role="button"`；探针会数 `button button` 必须为 0 |
+| 设置页「点了一下又自己跳回旧值」 | `refresh()` 是异步的，使用者在它 resolve 之前点选就会被旧值盖掉 | `formTouchedRef`：**动过的栏位不再被 refresh 覆盖**，保存后交还控制权。这是真 UX bug |
 
-## 7. 数据模型要点
+### 上下文窗口 / 摘要 / MOD / 图片 这一轮补上的坑
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 「窗口少一条也不肯整个出去」 | 第一版 `computeWindow` 写成「向内扩」，与定稿的「向外扩」相反 | 规则是**把整个交换推到窗口外**。两种语义各有测试 |
+| AI 把摘要当成最新资讯 | 摘要位置不对 / 没标注 | 注入在 **before-history（紧贴历史之前）**，标题写死「不是最新消息」，末尾加「以下是最近的原文对话」 |
+| 摘要把玩家的选择写成 AI 自己的 | 压缩时揉成一段 | 输出**必须分「用户：」「叙事：」两段**；注入时也分开 |
+| 摘要生成到一半使用者又发一句 | 摘要要读当前上下文 | 压缩期间 `summarizing = true`，`send()` 直接 return；取消则不写入、下次重试 |
+| 模型一直失败 → 那段对话凭空消失 | 失败只是跳过 | 连续失败 3 次退化为**本地骨架摘要**。**宁可粗糙也不能丢。** |
+| 旧记忆条目清不干净（换台装置又回来） | `clear()` 走 deleteRange，outbox 收敛点刻意不对它产生墓碑 | 迁移必须**逐条 `delete(id)`**，测试断言墓碑产生 |
+| 「两边都有资料」每次重新登入都被问 | 判据只看「两边非空」 | 加判据：**这个库有没有同步游标**。有游标＝这台装置同步过，直接拉 |
+| 选了「以本地为准」结果还是云端赢 | pull 会先把云端写进本地表 | 四步不能省：**拍快照 → 拉一遍拿 rev → 用快照盖回去 → 推上去** |
+| 冲突「覆盖回去」之后又冲突一次 | 只写回本地、没动 rev | 覆盖回去时把本地 rev **对齐到那一版**（`setRev`），下一次推送才会被接受 |
+| 把 HTML 改名成 `.png` 就能上传 | 只看副檔名 / 只信 `file.type` | **magic byte 白名单**，认不出来一律拒；**SVG 单独拒绝**；再加体积与边长上限 |
+| jsdom 没有 `URL.createObjectURL` | 图片预览要用 | `src/test/setup.ts` 补假的（跟 `crypto.subtle` 一样处理） |
+
+### 第二轮使用者实测回報後補上的坑（2026-10-15 第三批，全是真 bug）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| **上传封面/头像「没有成功应用」** | `ImageSlots` 把新图写进 `base.json`，但保存走 `draftToPackage(draft, base)`，而 **`draft.json` 是打开编辑器那一刻的快照** —— `cover` / `avatar` 根本没进 `card.json`。文件存进库了却没人引用它 | 上传时必须**同时**更新 `base` 与 `draft.json`（见 `CardEditorScreen` 的 `onChange`）。**教训：一个组件有两份状态源时，问一句「保存时读的是哪一份」。** |
+| 封面「传不上去」 | 原图上限被我定成 2 MB，手机照片动辄 3–8 MB，直接被拒（只弹了个 toast） | 上限放到 **10 MB**，先解码再压到 512px（压完通常 50–100 KB），尺寸检查放解码之后 |
+| **上下文占用「打不开、文字被吞」** | 明细层用 `position: fixed`，却渲染在 `<header class="dsh-header">` 里面，而 header 有 `backdrop-filter: blur(14px)` —— **`backdrop-filter` 会让该元素成为 fixed 定位的包含块**，「全屏遮罩」被关进顶栏那个小盒子 | 明细层挂在 PlayScreen 根节点（跟「对话 / 记忆 / MOD」同一套 `absolute inset-0`）。**教训：`position: fixed` 的祖先里不许有 transform / filter / backdrop-filter / contain。** |
+| 状态栏那一条比顶栏灰 | 状态栏显示的是**页面底色**，而 `body` 是 `#f2f2f7` | `body` 底色改白；顶栏加 `padding-top: calc(env(safe-area-inset-top) + 0.875rem)` 让白色延伸到状态栏底下 |
+| 顶栏的上下文文字被挤掉 | 一行里塞了卡片名 + 模型 + 上下文 + 四个按钮 | 顶栏只留「卡片名 + 模型」；四个入口收成 ⋮ 菜单；上下文改成输入框旁的环形图标，按下才看明细 |
+| 底部导航按钮太小 | `.dsh-chip` 自带 padding，`py-*` 被它盖掉（同权重、声明顺序在后） | 用 `min-h-[64px]` 控制高度（min-height 不会被 padding 规则盖）。**`.dsh-chip` 上不要用 py-\*，会被吃掉。** |
+| 占用百分比永远是 0% | 默认 `contextLength` 是 **100 万**，几千 token 就是 0% | 默认改成 **12.8 万**（真实模型量级），阈值压缩才有意义 |
+
+## 7. 数据模型与关键规则
 
 - `messages` 是**树**（`parentId` + `chats.currentLeafId`）：重新生成 = 挂第二个孩子，回溯 = 把 currentLeafId 指回历史节点。
 - `cardFiles` 是**虚拟文件系统**（`[cardId+path]` 复合主键）：card.json / ui/index.html / worldbook.json / assets/*，导出 zip 就是反向打包。
-- **上下文窗口**：`settings` 的 `contextMode`（`recent` / `all`）与 `contextMessageLimit`（默认 6）。
-  「条」= user 与 assistant 各算一条，**不含本轮输入**。窗口边界**永不切开一个交换**（向外扩）。
-- **记忆库 = 摘要库**：`memories` 表，`tier: 'summary'`。掉出窗口的**交换**由模型压成摘要（分「用户 / 叙事」两段），
-  注入在**历史之前**并标注「不是最新消息」。20 条上限，超出时最老 5 条本地合并。
-  旧的 `recent` / `permanent` 层级只在迁移期存在（`migrate.ts` 逐条删除）。
-- **MOD**：`mods` 表（`id, enabled, order`），接在卡片提示词之后（system 35）。每轮重新组装 → 天然热插拔。
-- **图片**：卡片封面 / 头像存 `assets` 表，走既有的加密 blob 通道；导出卡片默认不含图（备份仍然带）。
-- 全局配置（前缀词 / 后缀词 / 提示词）在 `configs` 表 `scope='global'`。
-- **账号分库**：`db` 是可换的连接（`export let db` + `openDatabase/switchDatabase`）。未登录用 `dsh-roleplay`，登录账号 X 用 `dsh-roleplay@x`——两个账号的本地数据天然隔离。
-- 同步用的四张表（Dexie v2，只加表）：`syncOutbox`（待推送，`[kind+id]` 去重）、`syncState`（游标 / deviceId / 配额）、`syncRev`（每笔已同步到第几版）、`syncConflicts`（被覆盖版本的本地副本）、`blobState`（素材上传状态）。v3 只加 `mods`。
-- 云端的「变更日志」`changes(seq AUTOINCREMENT)` 是增量同步游标的唯一依据：**不依赖任何设备时钟**。
+
+### 7.1 注入顺序（使用者 2026-10-15 定稿，改之前先问）
+
+```
+ 1  卡片提示词   card.prompts.prompt      system 10
+ 2  MOD          mods（enabled，按 order） system 20
+ 3  卡片前缀词   card.prompts.pre         system 30
+ 4  全局前缀词   config.prePrompt         system 40
+ 5  全局提示词   config.prompt            system 50
+ 6  互动页初始设定 setup（chat.promptSnapshot） system 60
+ 7  世界书                                 before-history 50+/100+
+ 8  更早的对话摘要                          before-history 200
+ 9  历史消息                               history
+10  全局后置词   config.postPrompt         post 10
+11  卡片后置词   card.prompts.post         post 20
+12  本轮输入                              post 30
+```
+
+- **不注入**：卡片简介（`description`）、主人公设定（`persona.intro`）、前情提要（`scenario`）。
+  JSON 字段保留（导入的卡不坏），只是不进提示词。
+- 摘要块的标题写死「**以下内容发生在当前对话之前，不是最新消息**」，末尾加「以下是最近的原文对话」。
+- 有 `assemble.test.ts` 逐位断言整条顺序，改动顺序一定会红。
+
+### 7.2 上下文窗口与摘要库
+
+- `settings.contextMode`：`recent`（默认）/ `all`；`settings.contextMessageLimit`：默认 6。
+  「条」= user 与 assistant 各算一条，**不含本轮输入**；窗口边界**永不切开一个交换**（向外扩）。
+- **记忆库 = 摘要库**（`memories` 表，`tier: 'summary'`）。旧的 `recent` / `permanent` 只在迁移期存在
+  （`migrate.ts` 逐条删除 + `memorySchema` 标记，只跑一次）。
+- **什么时候压**（两个触发取先到者）：
+  ① 交换掉出窗口（`recent` 模式必须压，否则那段直接丢失）；
+  ② **上下文占用 ≥ `settings.summaryTriggerPercent`**（默认 90，可设 50–92）。
+- **压多少**：压到约 `SUMMARY_TARGET_PERCENT`（75%）就停手；一次最多 `SUMMARY_MAX_PAIRS_PER_RUN`（6）对，
+  不够下一轮继续。摘要也计入 token 预算，超预算时照样会被裁。
+- **一对一项摘要**：一次请求可以压多对（提示词要求 `### 1` `### 2` 编号），回来**拆成多条**存储。
+- `SUMMARY_MAX_CHARS=200` / `SUMMARY_KEEP=100` / `SUMMARY_MERGE_BATCH=10`（超上限时最老 10 条本地合并）。
+- 失败：连续 `SUMMARY_FAIL_LIMIT`（3）次 → 退化为本地骨架摘要（`origin: 'local-skeleton'`），UI 会标出来。
+- `settings.summaryEnabled`（默认开）；压缩期间 `summarizing = true`，**禁止发送**。
+
+### 7.3 严格一对 + 生成期间锁输入
+
+- `Composer`：`streaming || summarizing` 时**输入框与发送键一起禁用**，placeholder 变
+  「AI 正在回复…／正在整理之前的记忆…」，**只留「停止」**（不能连停止都没有，否则卡住只能刷新）。
+- **在第一个字之前按停止** → 撤回那条使用者讯息（`db.messages.delete`）、`currentLeafId` 指回它的 parent、
+  把文字放进 `useSession.restoreInput`，`Composer` 收到后填回输入框并 `consumeRestoreInput()`。
+  为什么必须这样：否则会留下一条没人回覆的使用者讯息，下次发送就变成两条使用者讯息连着。
+- 已经吐了字之后按停止 → 保留那半条（`status: 'incomplete'`），这一对仍然成立。
+- `send()` 若发现叶子已经是使用者讯息（例如 AI 回覆被删掉）→ **拒绝发送**并提示先按「重新生成」。
+
+### 7.4 MOD / 图片 / 同步
+
+- **MOD**：`mods` 表（`id, enabled, order`），位置在**卡片提示词之后**（system 20）。每轮重新组装 → 天然热插拔。
+  设置页「MOD」分节管理；聊天页 ⋮ 菜单里能当场开关。
+- **图片**：卡片封面 / 头像存 `assets` 表（`cardFiles` kind='asset'），走既有的加密 blob 通道。
+  `card.json.cover` / `card.json.avatar` 是 assets 里的路径，`cardRepo` 会映射成
+  `record.coverAssetId` / `record.avatarAssetId`。导出卡片**默认不含图**（询问后可含）；「导出全部数据」的备份一定带图。
+  校验在 `src/core/storage/image.ts`：magic byte 白名单（PNG/JPEG/GIF/WebP）、**拒绝 SVG**、
+  原图 ≤10 MB、最长边 ≤4096，再压到封面 512 / 头像 128。
+- **账号分库**：`db` 是可换的连接（`export let db` + `openDatabase/switchDatabase`）。未登录 `dsh-roleplay`，
+  账号 X 用 `dsh-roleplay@x` —— 天然隔离。
+- 同步用的表（Dexie v2 只加表，v3 加 `mods`）：`syncOutbox` / `syncState` / `syncRev` / `syncConflicts` / `blobState`。
+  云端 `changes(seq AUTOINCREMENT)` 是增量游标的唯一依据，**不依赖设备时钟**。
+- **「两边都有资料」的取舍**：
+  - 登入时：本库**没有同步游标** + 本地非空 + 云端非空 → 先问（`status: 'needs-choice'`）。
+  - 手动点「立即同步」时：本地**有待推内容**（outbox 非空）+ 云端非空 → 先问。自动同步不打扰。
+  - 「以本机为准」= **拍快照 → 归零游标拉一遍（拿 rev）→ 用快照盖回去 → 推上去**（四步，少了第三步就白做）。
+  - 冲突面板（`ConflictPanel`）能解密查看被覆盖的那一版，也能「用这一版覆盖回去」（会同步对齐 rev）。
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**60 个测试文件 / 394 个用例全绿**，构建通过。
-关键回归测试：装配顺序、世界书触发、正则替换、白名单清洗（含 XSS 用例）、卡片 zip 往返、酒馆卡互转、卡片自愈、草稿态不落库、布局约束。
-渲染相关的关键回归测试：**纯文字也要渲染成 `text` 区块**（不能是空气泡）、**记忆区块提取后仍留在正文里**、气泡内不得有 `<button>` 包 `<button>`（`src/core/render/pipeline.test.ts`、`src/ui/play/MessageBubble.test.tsx`）。
-会话相关的关键回归测试：**「停止」在任何时刻按下都要生效**、**「重新生成」不得多插使用者讯息**、**从这里重开会自动生成**、`init()` 幂等（切页面不被截停）、换库后 `reload()`（`src/state/useSession.test.ts`）。
-上下文与摘要：**窗口不切开一个交换（向外扩）**、半对不压、**摘要按对压缩且分「用户/叙事」两段**、连续失败退化为骨架、20 条上限合并（`window.test.ts`、`summarize.test.ts`、`memoryStore.test.ts`）。
-同步相关的关键回归测试：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径都被拦到且远端套用不回灌、rev 递增与冲突副本、墓碑、**秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、**两边都有资料时的取舍四步**、两装置端到端一致（`src/core/sync/integration.test.ts`、`src/state/useSync.test.ts`）。
-图片：**伪装的 .png 被拒、SVG 被拒、超 2 MB 被拒、导出可不含图**（`src/core/storage/image.test.ts`）。
-后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs` 对 `wrangler dev` 冒烟。删除帐号端点另有 `worker/test/account.test.ts`（含「别人的帐号不受影响」与「KV 素材一起删」）。
+改之前先跑一遍确认基线：**60 个测试文件 / 400 个用例全绿**，构建通过。
+
+关键回归测试：
+- 装配顺序 / 世界书触发 / 正则替换 / 白名单清洗（含 XSS）/ 卡片 zip 往返 / 酒馆卡互转 / 卡片自愈 / 草稿态不落库 / 布局约束。
+- 渲染：**纯文字也要渲染成 `text` 区块**、**记忆区块提取后仍留在正文里**、气泡内不得有 `button button`。
+- 会话：**「停止」在任何时刻按下都要生效**、**第一个字之前停止要撤回讯息并回填输入框**、
+  **「重新生成」不得多插使用者讯息**、**「从这里重开」会自动生成**、生成期间输入框锁住、
+  `init()` 幂等（切页面不被截停）、换库后 `reload()`。
+- 上下文与摘要：**窗口不切开一个交换（向外扩）**、半对不压、**一对一项摘要**、
+  **多段输出能按 `### n` 拆开**、连续失败退化为骨架、库上限 100 与合并 10。
+- 同步：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径、rev 递增与冲突副本、墓碑、
+  **秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、**两边都有资料的取舍四步**、两装置端到端一致。
+- 图片：**伪装的 .png 被拒、SVG 被拒、超限被拒、导出可不含图**。
+
+后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs`。
+删除帐号端点另有 `worker/test/account.test.ts`。
+
+## 9. 接手须知（下一步修 bug 从这里开始）
+
+### 现在的状态
+
+- 最后一个提交：`d1dd13c`（已推 GitHub，工作区干净）。
+- 线上：前端 https://cc7ba06c.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
+  Worker https://dsh-sync-api.s17179xty.workers.dev （version `cf509837-2869-4185-acfd-237f30c5b10f`）。
+- 测试 60 档 / 400 例全绿；build 无错；两个浏览器探针在**本地与线上**都是 `pass: true`、console 零警告。
+- 规格与计划：
+  `docs/superpowers/specs/2026-10-15-context-summary-mod-images-design.md`、
+  `docs/superpowers/plans/2026-10-15-context-summary-mod-images.md`
+  （**注意：第二轮实测后又改了注入顺序、压缩触发方式、严格一对，这三处以本文件 §7 为准，spec 里是旧版**）。
+
+### 已知还没做 / 可能被投诉的地方
+
+1. **内置卡的提示词措辞没动**，卡片版本也没再升 —— 因为再升一次会**第二次强制覆盖**使用者手改过的内置卡。
+   如果使用者抱怨内置卡的「记忆结构定义」和现在的摘要库对不上，先问他要不要覆盖。
+2. **「以云端为准」时本地被覆盖的那一版没有留档**。现在 `syncConflicts` 里存的只有「推送被拒、服务器赢」的那一版。
+   要做的话：在 pull 覆盖前把本地行抓成副本塞进 `syncConflicts`。
+3. **摘要质量只靠提示词**，没有评估集。如果使用者说「摘要记得不对」，先看 `summarize.ts` 的提示词与
+   `SUMMARY_MAX_CHARS`，再看窗口是不是太小（`contextMessageLimit`）。
+4. **图片压缩走 canvas**，jsdom 里没有 canvas，所以单元测试只覆盖校验逻辑；真实压缩只在浏览器有效。
+5. `docs/superpowers/` 里的旧 spec / plan 没有随第二轮改动更新。
+
+### 修 bug 的标准流程
+
+1. 先复现：能写测试就**先写一个会失败的测试**（`npm run test -- <file>`）。
+2. 改最小的那一处；改完 `npm run test` + `npm run build`。
+3. UI 改动 → 起 dev + headless Chrome，跑 `scripts/cdp-ui-check2.mjs`（本地），必要时也跑线上。
+4. 提交（中文、说明「为什么」）→ 部署两个（见 §4）→ 再对线上跑一次探针。
+5. 把新踩到的坑补进 §6。
