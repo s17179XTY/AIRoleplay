@@ -1,18 +1,19 @@
 import { create } from 'zustand';
 import { db, newId } from '../core/storage/db';
-import type { ConfigRecord, MemoryRecord, MessageRecord } from '../core/storage/types';
+import type { ConfigRecord, MemoryOrigin, MemoryRecord, MessageRecord } from '../core/storage/types';
 import {
   DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_CONTEXT_MODE, DEFAULT_PARAMS,
   DEFAULT_SUMMARY_BATCH, DEFAULT_SUMMARY_TRIGGER, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE,
   SETTING_SUMMARY_BATCH, SETTING_SUMMARY_ENABLED, SETTING_SUMMARY_TRIGGER,
-  SUMMARY_FAIL_LIMIT, SUMMARY_MAX_PAIRS_PER_RUN, SUMMARY_TARGET_PERCENT,
+  SUMMARY_FAIL_LIMIT, SUMMARY_MAX_CHARS, SUMMARY_MAX_PAIRS_PER_RUN, SUMMARY_TARGET_PERCENT,
   SUMMARY_TRIGGER_MAX, SUMMARY_TRIGGER_MIN,
   type ContextMode,
 } from '../core/storage/types';
 import { assemble } from '../core/assembler/assemble';
 import { estimateTokens } from '../core/assembler/budget';
-import { buildExchanges, computeWindow } from '../core/assembler/window';
-import { skeletonSummary, summarizePairs } from '../core/assembler/summarize';
+import { buildExchanges, computeWindow, coveredEndIndex, type Exchange } from '../core/assembler/window';
+import { planSummaryGroups } from '../core/assembler/summaryPlan';
+import { skeletonSummary, summarizePairs, type SummaryPart } from '../core/assembler/summarize';
 import { createMockAdapter, mockReplyFor } from '../core/providers/mock';
 import { isAbortError, type ProviderAdapter } from '../core/providers/types';
 import { ensureSeedCard, listCards, loadCardPackage, worldbookOf } from '../core/storage/cardRepo';
@@ -25,7 +26,7 @@ import { listEnabledMods } from '../core/storage/modRepo';
 import { migrateMemorySchema } from '../core/storage/migrate';
 import { adapterFor } from '../core/providers/registry';
 import type { CardPackage } from '../core/cards/package';
-import type { ModItem, SummaryItem } from '../core/assembler/types';
+import type { AssembledRequest, EntrySource, ModItem, SummaryItem } from '../core/assembler/types';
 
 const MOCK_CFG = { id: 'mock', baseUrl: '', apiKey: '', extraHeaders: {} };
 
@@ -177,16 +178,57 @@ export async function memoryEnabled(): Promise<boolean> {
   return (await readContextSettings()).summaryEnabled;
 }
 
+/**
+ * assemble 按预算裁剪历史时，裁剪边界必须对齐到「交换」。
+ *
+ * assemble 是一条一条消息裁的（最旧的先裁），可能只把一对里的 user 裁掉、assistant 还留着。
+ * 这里以「最后一条被裁掉的消息」为界，把它所在的整个交换都算窗口外，
+ * 这样窗口外的那段才能整段进摘要库，不会出现「既没进提示词、也没进摘要」的黑洞。
+ */
+function trimHistoryToExchanges(messages: MessageRecord[], droppedIds: Set<string>): MessageRecord[] {
+  if (droppedIds.size === 0) return messages;
+  const exchanges = buildExchanges(messages.map((m) => ({ id: m.id, role: m.role })));
+  const indexOf = new Map(messages.map((m, i) => [m.id, i]));
+  let lastDropped = -1;
+  messages.forEach((m, i) => {
+    if (droppedIds.has(m.id)) lastDropped = i;
+  });
+  if (lastDropped < 0) return messages;
+  for (const ex of exchanges) {
+    const first = indexOf.get(ex.ids[0]) ?? -1;
+    const end = first + ex.ids.length - 1;
+    if (lastDropped >= first && lastDropped <= end) return messages.slice(end + 1);
+  }
+  return messages;
+}
+
+/** 一次装配的完整结果：提示词内容 + 窗口内外 + 预算（send / preview / 摘要判断共用） */
+interface AssemblyResult {
+  assembled: AssembledRequest;
+  budget: number;
+  summaries: SummaryItem[];
+  mods: ModItem[];
+  window: {
+    windowIds: string[];
+    outsideIds: string[];
+    mode: 'recent' | 'all';
+    limit: number | null;
+  };
+}
+
 export const useSession = create<SessionState>((set, get) => {
   /**
-   * 把「掉出上下文窗口的交换」交给模型压成摘要。
+   * 把「攒够的交换」交给模型压成摘要。
    *
-   * 规则（spec §2，使用者逐条确认过）：
-   * - 只要攒够 `summaryBatchPairs` 对（默认 1）就压；
-   * - 只压**完整交换**（computeWindow 已把边界对齐，绝不压半对）；
-   * - 一次请求压一批，输出分「用户 / 叙事」两段；
-   * - 期间 `summarizing = true`，发送被挡住（它要读当前上下文，中途发消息会冲突）；
-   * - 失败不吞：保留 pending 下次再试；连续失败 SUMMARY_FAIL_LIMIT 次 → 本地骨架兜底。
+   * 使用者 2026-10-15 回饋後定稿：
+   * - **已经压成摘要的消息绝不再进提示词**（否则原文 + 摘要双份注入，上下文只会越压越大）；
+   *   压缩永远从「最后一条摘要覆盖的消息之后」开始，压过的不会重复压。
+   * - 两种触发取先到者：① 掉出窗口的交换（必须压，否则直接丢失）；
+   *   ② 上下文占用 ≥ summaryTriggerPercent（主动压到约 SUMMARY_TARGET_PERCENT）。
+   * - `summaryBatchPairs` = **攒够几对，合成一条摘要**（不是每对一条）。
+   * - 压缩结果**不比原文长**：模型摘要、本地骨架、原文保留三者取最短；都不更短就保留原文，
+   *   避免「1 个字压成一整句」反而更占上下文。
+   * - 失败不吞：连续失败 SUMMARY_FAIL_LIMIT 次 → 本地骨架兜底。
    */
   const ensureSummaries = async (input: {
     chatId: string;
@@ -196,155 +238,167 @@ export const useSession = create<SessionState>((set, get) => {
     cfg: { id: string; baseUrl: string; apiKey: string; extraHeaders: Record<string, string> };
     model: string;
     signal: AbortSignal;
-    /** 当前上下文占用（token）与预算；用来决定要不要按阈值主动压 */
-    usage: { tokens: number; budget: number; summaries: SummaryItem[]; mods: ModItem[] };
-    card: CardPackage;
-    setup: string;
-    configRow: ConfigRecord | undefined;
+    /** 本轮真正要发送的装配结果：窗口内外、占用与预算都以它为准（与 preview 同一套） */
+    pre: AssemblyResult;
   }): Promise<number> => {
-    const { chatId, path, settings, streamer, cfg, model, signal } = input;
+    const { chatId, path, settings, streamer, cfg, model, signal, pre } = input;
     if (!settings.summaryEnabled || path.length === 0) return 0;
-
-    const messages = path.map((m) => ({ id: m.id, role: m.role }));
-    const { outsideIds } = computeWindow({ messages, mode: settings.mode, limit: settings.limit });
-    const outside = new Set(outsideIds);
+    if (signal.aborted) return 0;
 
     const existing = await listSummaries(chatId);
-    const lastTo = existing.length > 0 ? existing[existing.length - 1].toMessageId : undefined;
-    const coveredIdx = lastTo ? path.findIndex((m) => m.id === lastTo) : -1;
-
-    /*
-     * 要压哪几对？两个触发取先到者（使用者 2026-10-15 定稿）：
-     * ① 掉出窗口的交换 —— 必须压，否则那段直接丢失；
-     * ② 上下文占用达到 summaryTriggerPercent（默认 90）—— 主动压，直到回落到 ~75%。
-     * 一次最多压 SUMMARY_MAX_PAIRS_PER_RUN 对，不够下一轮继续（避免这一轮等太久）。
-     */
-    const budget = input.usage.budget;
-    const triggerTokens = budget > 0 ? budget * (settings.triggerPercent / 100) : Number.POSITIVE_INFINITY;
-    const targetTokens = budget > 0 ? budget * (SUMMARY_TARGET_PERCENT / 100) : 0;
-
-    const exchanges = buildExchanges(messages);
-    const idxOf = new Map<string, number>();
-    path.forEach((m, i) => idxOf.set(m.id, i));
-
-    const picked: { ids: string[]; start: number; end: number }[] = [];
-    let projected = input.usage.tokens;
-    for (const ex of exchanges) {
-      const start = idxOf.get(ex.ids[0]) ?? -1;
-      const end = idxOf.get(ex.ids[ex.ids.length - 1]) ?? -1;
-      if (start < 0 || end < 0 || end <= coveredIdx) continue;   // 已经压过了
-      const isOutside = outside.has(ex.ids[0]);
-      if (!isOutside) {
-        if (projected < triggerTokens) break;   // 没到阈值，不主动压窗口内的
-        if (projected <= targetTokens) break;   // 已经压够了
-      }
-      const pairTokens = ex.ids.reduce((sum, id) => {
-        const row = path[idxOf.get(id)!];
-        return sum + estimateTokens(row.raw);
-      }, 0);
-      // 压掉原文、换上一段摘要（约 200 token），就是这一对能省下的量
-      projected -= Math.max(0, pairTokens - 200);
-      picked.push({ ids: ex.ids, start, end });
-      if (picked.length >= SUMMARY_MAX_PAIRS_PER_RUN) break;
-    }
-
+    const plan = planSummaryGroups({
+      path: path.map((m) => ({ id: m.id, role: m.role, raw: m.raw })),
+      windowIds: pre.window.windowIds,
+      summaries: existing,
+      totalTokens: pre.assembled.totalTokens,
+      budget: pre.budget,
+      triggerPercent: settings.triggerPercent,
+      batchPairs: settings.batch,
+      maxPairsPerRun: SUMMARY_MAX_PAIRS_PER_RUN,
+      targetPercent: SUMMARY_TARGET_PERCENT,
+    });
+    const { groups, picked } = plan;
     if (picked.length === 0) return 0;
-    if (picked.length < settings.batch) return 0;
 
+    const idxOf = new Map(path.map((m, i) => [m.id, i]));
+    const rowsOfGroup = (g: Exchange[]): MessageRecord[] =>
+      g.flatMap((ex) => ex.ids.map((id) => path[idxOf.get(id)!]));
+    const payloads = groups.map((g) => rowsOfGroup(g).map((r) => ({ role: r.role, content: r.raw })));
+
+    // 攒够 N 对合成一条时，允许的字数也按 N 放大：200 字装不下多条对话，会把信息压丢
+    const maxChars = SUMMARY_MAX_CHARS * Math.max(1, ...groups.map((g) => g.length));
     const failKey = `${chatId}|${picked[0].ids[0]}`;
     const previousTail = existing.length > 0
       ? (existing[existing.length - 1].assistantText ?? existing[existing.length - 1].text).slice(-200)
       : undefined;
 
-    const controller = new AbortController();
-    summarizeAbort = controller;
-    const relay = () => controller.abort();
-    signal.addEventListener('abort', relay, { once: true });
-    set({ summarizing: true });
+    let modelParts: SummaryPart[] = [];
+    let modelFailed = false;
+    if (streamer) {
+      const controller = new AbortController();
+      summarizeAbort = controller;
+      const relay = () => controller.abort();
+      signal.addEventListener('abort', relay, { once: true });
+      set({ summarizing: true });
+      try {
+        if (controller.signal.aborted) return 0;
+        modelParts = await summarizePairs({
+          adapter: streamer, cfg, model, pairs: payloads, previousTail, maxChars, signal: controller.signal,
+        });
+        summaryFailures.delete(failKey);
+      } catch (err) {
+        if (controller.signal.aborted || isAbortError(err)) return 0; // 使用者取消：不写入，下次再试
+        const n = (summaryFailures.get(failKey) ?? 0) + 1;
+        summaryFailures.set(failKey, n);
+        if (n < SUMMARY_FAIL_LIMIT) return 0;                          // 还没到阈值：保留 pending，下次重试
+        modelFailed = true;
+      } finally {
+        signal.removeEventListener('abort', relay);
+        if (summarizeAbort === controller) summarizeAbort = null;
+        set({ summarizing: false });
+      }
+    }
 
-    try {
-      const pairsPayload = picked.map((p) => p.ids.map((id) => {
-        const row = path[idxOf.get(id)!];
-        return { role: row.role, content: row.raw };
-      }));
+    for (let i = 0; i < groups.length; i += 1) {
+      const rows = rowsOfGroup(groups[i]);
+      const rawUser = rows.filter((r) => r.role === 'user').map((r) => r.raw).join('\n');
+      const rawAssistant = rows.filter((r) => r.role === 'assistant').map((r) => r.raw).join('\n');
+      // 「原文保留」：格式与摘要条目一致，长度就是原文本身，绝不会更大
+      const verbatimText = `[用户] ${rawUser}\n[叙事] ${rawAssistant}`;
+      const modelPart = modelFailed ? undefined : modelParts[i];
+      const startNo = idxOf.get(rows[0].id)! + 1;
+      const endNo = idxOf.get(rows[rows.length - 1].id)! + 1;
+      const skeleton = skeletonSummary(payloads[i], startNo, endNo);
 
-      let parts: { userText: string; assistantText: string }[];
-      let origin: 'model' | 'local-skeleton' = 'model';
-      if (!streamer) {
-        // 沒有可用的模型（还没接服务商）：直接本地骨架，宁可粗糙也不能丢
-        parts = picked.map((p, i) => skeletonSummary(
-          pairsPayload[i], p.start + 1, p.end + 1,
-        ));
-        origin = 'local-skeleton';
-      } else {
-        try {
-          parts = await summarizePairs({
-            adapter: streamer,
-            cfg,
-            model,
-            pairs: pairsPayload,
-            previousTail,
-            signal: controller.signal,
-          });
-          summaryFailures.delete(failKey);
-        } catch (err) {
-          if (controller.signal.aborted || isAbortError(err)) return 0; // 使用者取消：不写入，下次再试
-          const n = (summaryFailures.get(failKey) ?? 0) + 1;
-          summaryFailures.set(failKey, n);
-          if (n < SUMMARY_FAIL_LIMIT) return 0;                        // 还没到阈值：保留 pending，下次重试
-          parts = picked.map((p, i) => skeletonSummary(pairsPayload[i], p.start + 1, p.end + 1));
-          origin = 'local-skeleton';
+      const choices: Array<{ text: string; userText: string; assistantText: string; origin: MemoryOrigin }> = [];
+      if (modelPart) {
+        choices.push({
+          text: modelPart.userText
+            ? `[用户] ${modelPart.userText}\n[叙事] ${modelPart.assistantText}`
+            : `[叙事] ${modelPart.assistantText}`,
+          userText: modelPart.userText,
+          assistantText: modelPart.assistantText,
+          origin: 'model',
+        });
+      }
+      choices.push({
+        text: `[叙事] ${skeleton.assistantText}`,
+        userText: skeleton.userText,
+        assistantText: skeleton.assistantText,
+        origin: 'local-skeleton',
+      });
+      choices.push({ text: verbatimText, userText: rawUser, assistantText: rawAssistant, origin: 'verbatim' });
+
+      // 取最短的那一个；原始内容本身也在候选里 → 永远不会「压完比原来更大」
+      let best = choices[0];
+      let bestTokens = estimateTokens(best.text);
+      for (const choice of choices.slice(1)) {
+        const tokens = estimateTokens(choice.text);
+        if (tokens < bestTokens) {
+          best = choice;
+          bestTokens = tokens;
         }
       }
 
-      // 一对一项摘要（使用者明确要求）：一次请求可以出多段，但存成多条
-      for (let i = 0; i < picked.length; i += 1) {
-        const part = parts[i] ?? { userText: '', assistantText: '（这一段没有生成摘要）' };
-        const slot = picked[i];
-        const rows = path.slice(slot.start, slot.end + 1);
-        await addSummary({
-          chatId,
-          text: part.userText ? `[用户] ${part.userText}\n[叙事] ${part.assistantText}` : `[叙事] ${part.assistantText}`,
-          userText: part.userText || undefined,
-          assistantText: part.assistantText || undefined,
-          dateLabel: formatDateLabel(rows),
-          rangeLabel: `第 ${slot.start + 1}–${slot.end + 1} 条`,
-          fromMessageId: slot.ids[0],
-          toMessageId: slot.ids[slot.ids.length - 1],
-          messageCount: slot.ids.length,
-          origin,
-        });
-      }
-      await trimSummaries(chatId);
-      const list = await listSummaries(chatId);
-      set({ memories: list, memoryCount: list.length });
-      return picked.length;
-    } finally {
-      signal.removeEventListener('abort', relay);
-      if (summarizeAbort === controller) summarizeAbort = null;
-      set({ summarizing: false });
+      await addSummary({
+        chatId,
+        text: best.text,
+        userText: best.userText || undefined,
+        assistantText: best.assistantText || undefined,
+        dateLabel: formatDateLabel(rows),
+        rangeLabel: `第 ${startNo}–${endNo} 条`,
+        fromMessageId: rows[0].id,
+        toMessageId: rows[rows.length - 1].id,
+        messageCount: rows.length,
+        origin: best.origin,
+        maxChars: SUMMARY_MAX_CHARS * groups[i].length,
+      });
     }
+    await trimSummaries(chatId);
+    const list = await listSummaries(chatId);
+    set({ memories: list, memoryCount: list.length });
+    return picked.length;
   };
 
   /** 把「要送进提示词的东西」组一遍；streamReply / preview / 阈值判断共用，避免三处逻辑漂移 */
-  const buildAssembly = async (chatId: string, card: CardPackage, path: MessageRecord[], userText: string, setup: string, configRow: ConfigRecord | undefined, settings: ContextSettings) => {
-    const windowed = computeWindow({
-      messages: path.map((m) => ({ id: m.id, role: m.role })),
-      mode: settings.mode,
-      limit: settings.limit,
-    });
-    const windowSet = new Set(windowed.windowIds);
-    const inWindow = path.filter((m) => windowSet.has(m.id));
+  const buildAssembly = async (
+    chatId: string,
+    card: CardPackage,
+    path: MessageRecord[],
+    userText: string,
+    setup: string,
+    configRow: ConfigRecord | undefined,
+    settings: ContextSettings,
+  ): Promise<AssemblyResult> => {
+    const summaryRows = await listSummaries(chatId);
+    const summaries = toSummaryItems(summaryRows);
+    // 已经压成摘要的消息不再进提示词：窗口从「最后一条被覆盖的消息」之后算起
+    const coveredEnd = coveredEndIndex(path, summaryRows);
+    const uncovered = path.slice(coveredEnd + 1);
+    const uncoveredWindow = uncovered.map((m) => ({ id: m.id, role: m.role }));
+
+    let historyMsgs = uncovered;
+    if (settings.mode === 'recent') {
+      const windowed = computeWindow({ messages: uncoveredWindow, mode: 'recent', limit: settings.limit });
+      const inWindow = new Set(windowed.windowIds);
+      historyMsgs = uncovered.filter((m) => inWindow.has(m.id));
+    }
+
+    const active = await getActive();
+    const mods = await listEnabledMods();
     const toPromptRules = promptRules(await loadRulesForChat(chatId, card));
-    const historyItems = inWindow.map((m) => {
+    const limits = {
+      contextLength: active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
+      maxTokens: active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
+      reserve: 512,
+      worldbookTokenBudget: 2000,
+    };
+    const historyOf = (msgs: MessageRecord[]) => msgs.map((m) => {
       let content = stripThink(m.raw);
       if (toPromptRules.length > 0) content = applyRegexRules(content, toPromptRules);
       return { id: m.id, role: m.role, content };
     });
-    const active = await getActive();
-    const summaries = await listSummaries(chatId);
-    const mods = await listEnabledMods();
-    const assembled = assemble({
+    const assembleWith = (msgs: MessageRecord[]) => assemble({
       card: {
         pre: card.json.prompts.pre,
         prompt: card.json.prompts.prompt,
@@ -359,22 +413,44 @@ export const useSession = create<SessionState>((set, get) => {
         postPrompt: configRow?.postPrompt ?? '',
       },
       worldbook: worldbookOf(card),
-      summaries: toSummaryItems(summaries),
+      summaries,
       mods,
-      history: historyItems,
+      history: historyOf(msgs),
       userInput: userText,
       setup,
       macros: macroContext(card.json.name, card.json.persona.intro),
-      limits: {
-        contextLength: active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
-        maxTokens: active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
-        reserve: 512,
-        worldbookTokenBudget: 2000,
-      },
+      limits,
     });
-    const budget = (active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength)
-      - (active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens) - 512;
-    return { assembled, budget, summaries: toSummaryItems(summaries), mods, windowCount: windowed.windowIds.length };
+
+    // all 模式靠 assemble 的预算裁剪；裁剪后要按「整对」回退，避免半对被裁掉
+    let assembled = assembleWith(historyMsgs);
+    for (let pass = 0; pass < 3; pass += 1) {
+      const droppedIds = new Set(
+        assembled.dropped.filter((d) => d.source === 'history').map((d) => d.id),
+      );
+      if (droppedIds.size === 0) break;
+      const kept = trimHistoryToExchanges(historyMsgs, droppedIds);
+      if (kept.length === historyMsgs.length) break;
+      historyMsgs = kept;
+      assembled = assembleWith(historyMsgs);
+    }
+
+    const windowSet = new Set(historyMsgs.map((m) => m.id));
+    const windowIds = path.filter((m) => windowSet.has(m.id)).map((m) => m.id);
+    const outsideIds = path.filter((m) => !windowSet.has(m.id)).map((m) => m.id);
+    const budget = limits.contextLength - limits.maxTokens - limits.reserve;
+    return {
+      assembled,
+      budget,
+      summaries,
+      mods,
+      window: {
+        windowIds,
+        outsideIds,
+        mode: settings.mode,
+        limit: settings.mode === 'recent' ? settings.limit : null,
+      },
+    };
   };
 
   /**
@@ -542,10 +618,7 @@ export const useSession = create<SessionState>((set, get) => {
       cfg: summaryCfg,
       model: active?.preset.model ?? 'mock',
       signal: controller.signal,
-      usage: { tokens: pre.assembled.totalTokens, budget: pre.budget, summaries: pre.summaries, mods: pre.mods },
-      card,
-      setup: chat?.promptSnapshot ?? '',
-      configRow,
+      pre,
     });
     if (controller.signal.aborted) {
       set({ messages: await pathToLeaf(chatId, parentId), draft: '', streaming: false, error: null });
@@ -708,70 +781,52 @@ export const useSession = create<SessionState>((set, get) => {
       if (!chatId || !card) return empty;
 
       const chat = await db.chats.get(chatId);
-      const path = await pathToLeaf(chatId, chat?.currentLeafId ?? null);
-      const windowed = computeWindow({
-        messages: path.map((m) => ({ id: m.id, role: m.role })),
-        mode: settings.mode,
-        limit: settings.limit,
-      });
-      const windowSet = new Set(windowed.windowIds);
-      const summaries = await listSummaries(chatId);
       const configRow = await db.configs.where('scope').equals('global').first();
-      const active = await getActive();
-      const assembled = assemble({
-        card: {
-          pre: card.json.prompts.pre, prompt: card.json.prompts.prompt, post: card.json.prompts.post,
-          description: card.json.description, persona: card.json.persona.intro, scenario: card.json.scenario,
-        },
-        config: {
-          prompt: configRow?.prompt ?? '', prePrompt: configRow?.prePrompt ?? '', postPrompt: configRow?.postPrompt ?? '',
-        },
-        worldbook: worldbookOf(card),
-        summaries: toSummaryItems(summaries),
-        mods: await listEnabledMods(),
-        history: path.filter((m) => windowSet.has(m.id)).map((m) => ({ id: m.id, role: m.role, content: m.raw })),
-        userInput: get().draft,
-        setup: chat?.promptSnapshot ?? '',
-        macros: macroContext(card.json.name, card.json.persona.intro),
-        limits: {
-          contextLength: active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength,
-          maxTokens: active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens,
-          reserve: 512,
-          worldbookTokenBudget: 2000,
-        },
-      });
+      const path = await pathToLeaf(chatId, chat?.currentLeafId ?? null);
+      const built = await buildAssembly(
+        chatId, card, path, get().draft, chat?.promptSnapshot ?? '', configRow, settings,
+      );
 
-      const LABELS: Record<string, string> = {
-        'card-pre': '系统提示词', 'config-prompt': '系统提示词', 'config-pre': '系统提示词',
-        'card-system': '系统提示词', 'chat-setup': '系统提示词',
-        mod: 'MOD', worldbook: '世界书', memory: '更早的记忆', history: '历史',
-        user: '本轮输入', 'config-post': '后置词', 'card-post': '后置词',
+      const LABELS: Record<EntrySource, string> = {
+        'card-system': '系统提示词', mod: '系统提示词',
+        'card-pre': '前置词', 'config-pre': '前置词',
+        'config-prompt': '全局提示词',
+        'chat-setup': '初始设定',
+        worldbook: '世界书', memory: '更早的对话摘要', history: '历史',
+        'config-post': '后置词', 'card-post': '后置词', user: '本轮输入',
+      };
+      const ORDER = ['系统提示词', '前置词', '全局提示词', '初始设定', '世界书', '更早的对话摘要', '历史', '后置词', '本轮输入', '其他'];
+      const orderOf = (label: string) => {
+        const base = label.replace(/（.*$/, '');
+        const at = ORDER.indexOf(base);
+        return at < 0 ? ORDER.length : at;
       };
       const totals = new Map<string, number>();
-      for (const e of assembled.entries) {
+      for (const e of built.assembled.entries) {
         const label = LABELS[e.source] ?? '其他';
         totals.set(label, (totals.get(label) ?? 0) + e.tokens);
       }
-      const order = ['系统提示词', 'MOD', '世界书', '更早的记忆', '历史', '本轮输入', '后置词', '其他'];
-      const rows = order
+      const rows = ORDER
         .filter((label) => (totals.get(label) ?? 0) > 0)
-        .map((label) => ({ label: label === '历史' ? `历史（${windowed.windowIds.length} 条）` : label, tokens: totals.get(label) ?? 0 }));
-      if (summaries.length > 0 && !rows.some((r) => r.label.startsWith('更早的记忆'))) {
-        rows.splice(3, 0, { label: `更早的记忆（${summaries.length} 条）`, tokens: 0 });
+        .map((label) => ({
+          label: label === '历史' ? `历史（${built.window.windowIds.length} 条）` : label,
+          tokens: totals.get(label) ?? 0,
+        }));
+      if (built.summaries.length > 0 && !rows.some((r) => r.label.startsWith('更早的对话摘要'))) {
+        rows.push({ label: `更早的对话摘要（${built.summaries.length} 条）`, tokens: 0 });
       }
+      rows.sort((a, b) => orderOf(a.label) - orderOf(b.label));
 
-      const maxTokens = active?.preset.params.maxTokens ?? DEFAULT_PARAMS.maxTokens;
-      const contextLength = active?.preset.params.contextLength ?? DEFAULT_PARAMS.contextLength;
       return {
         rows,
-        totalTokens: assembled.totalTokens,
-        budget: contextLength - maxTokens - 512,
-        droppedHistory: assembled.dropped.filter((d) => d.source === 'history').length,
-        droppedWorldbook: assembled.dropped.filter((d) => d.source === 'worldbook').length,
-        windowCount: windowed.windowIds.length,
-        windowLimit: settings.mode === 'recent' ? settings.limit : null,
-        mode: settings.mode,
-        summaryCount: summaries.length,
+        totalTokens: built.assembled.totalTokens,
+        budget: built.budget,
+        droppedHistory: built.assembled.dropped.filter((d) => d.source === 'history').length,
+        droppedWorldbook: built.assembled.dropped.filter((d) => d.source === 'worldbook').length,
+        windowCount: built.window.windowIds.length,
+        windowLimit: built.window.limit,
+        mode: built.window.mode,
+        summaryCount: built.summaries.length,
       };
     },
 

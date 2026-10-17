@@ -27,7 +27,12 @@ export type SummaryPair = SummaryMessage[];
 
 const PREVIOUS_TAIL = 200;
 
-export function buildSummaryPrompt(pairs: SummaryPair[], previousTail?: string): string {
+export function buildSummaryPrompt(
+  pairs: SummaryPair[],
+  previousTail?: string,
+  /** 每一部分允许的最大字数：攒够 N 对合成一条摘要时要按 N 放大，否则多条对话会被压成 200 字丢信息 */
+  maxChars: number = SUMMARY_MAX_CHARS,
+): string {
   const lines: string[] = [];
   lines.push(`你在帮一个角色扮演应用整理长期记忆。下面有 ${pairs.length} 段对话，请**各自**压成一段摘要。`);
   lines.push('');
@@ -38,8 +43,9 @@ export function buildSummaryPrompt(pairs: SummaryPair[], previousTail?: string):
   lines.push('3. 分两部分写，各自以固定标记开头：');
   lines.push('   用户：<玩家这一方说过、做过、选择过的事>');
   lines.push('   叙事：<AI 这一方写过的事>');
-  lines.push(`4. 每部分不超过 ${SUMMARY_MAX_CHARS} 字。`);
+  lines.push(`4. 每部分不超过 ${maxChars} 字。`);
   lines.push('5. 不要添加原文没有的内容，不要评论。');
+  lines.push('6. **摘要必须比原文更短**：原文很短时也要更短，不要扩写、不要补背景。');
   lines.push('');
   lines.push('输出格式（**必须**照这个编号，一段都不要合并、顺序不要变）：');
   lines.push('### 1');
@@ -62,20 +68,20 @@ export function buildSummaryPrompt(pairs: SummaryPair[], previousTail?: string):
   return lines.join('\n');
 }
 
-function clip(text: string): string {
+function clip(text: string, maxChars: number = SUMMARY_MAX_CHARS): string {
   const t = text.trim();
-  return t.length > SUMMARY_MAX_CHARS ? t.slice(0, SUMMARY_MAX_CHARS) : t;
+  return t.length > maxChars ? t.slice(0, maxChars) : t;
 }
 
-function parseOne(text: string): SummaryPart {
+function parseOne(text: string, maxChars: number = SUMMARY_MAX_CHARS): SummaryPart {
   const body = text.trim();
   const userMatch = body.match(/用户\s*[:：]\s*([\s\S]*?)(?=\n\s*叙事\s*[:：]|$)/);
   const narrativeMatch = body.match(/叙事\s*[:：]\s*([\s\S]*)$/);
   if (narrativeMatch) {
-    return { userText: clip(userMatch?.[1] ?? ''), assistantText: clip(narrativeMatch[1]) };
+    return { userText: clip(userMatch?.[1] ?? '', maxChars), assistantText: clip(narrativeMatch[1], maxChars) };
   }
   // 模型没按标记输出：整段当叙事，userText 留空（上层会标记「格式未识别」）
-  return { userText: '', assistantText: clip(body) };
+  return { userText: '', assistantText: clip(body, maxChars) };
 }
 
 /** 解析单段（旧接口，保留给测试与兜底路径） */
@@ -87,13 +93,13 @@ export function parseSummaryParts(raw: string): SummaryPart {
  * 解析成「每对一段」。按 `### n` 切；切不出来时退化成「整段当第一段」，
  * 剩下的段落用兜底文案补齐（宁可粗糙也不能丢）。
  */
-export function parseSummarySections(raw: string, count: number): SummaryPart[] {
+export function parseSummarySections(raw: string, count: number, maxChars: number = SUMMARY_MAX_CHARS): SummaryPart[] {
   const text = raw.trim();
   const marked = text.split(/^\s*#{2,4}\s*\d+\s*$/m).map((s) => s.trim()).filter(Boolean);
   const sections = marked.length >= 1 && /用户\s*[:：]|叙事\s*[:：]/.test(text) ? marked : [text];
   const out: SummaryPart[] = [];
   for (let i = 0; i < count; i += 1) {
-    if (i < sections.length && sections[i]) out.push(parseOne(sections[i]));
+    if (i < sections.length && sections[i]) out.push(parseOne(sections[i], maxChars));
     else out.push({ userText: '', assistantText: '（这一段没有生成摘要，原文已按窗口规则出栈）' });
   }
   return out;
@@ -117,10 +123,12 @@ export async function summarizePairs(input: {
   model: string;
   pairs: SummaryPair[];
   previousTail?: string;
+  /** 每部分允许的最大字数（多对合成一条摘要时按对数放大） */
+  maxChars?: number;
   signal?: AbortSignal;
 }): Promise<SummaryPart[]> {
-  const { adapter, cfg, model, pairs, previousTail, signal } = input;
-  const prompt = buildSummaryPrompt(pairs, previousTail);
+  const { adapter, cfg, model, pairs, previousTail, maxChars, signal } = input;
+  const prompt = buildSummaryPrompt(pairs, previousTail, maxChars);
 
   let acc = '';
   let failure: string | null = null;
@@ -140,7 +148,7 @@ export async function summarizePairs(input: {
 
   if (failure) throw new Error(failure);
   if (!acc.trim()) throw new Error('摘要模型没有返回内容');
-  return parseSummarySections(acc, pairs.length);
+  return parseSummarySections(acc, pairs.length, maxChars);
 }
 
 /** @deprecated 旧的一次压一批（不分段）接口，测试仍在用 */

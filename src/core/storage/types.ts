@@ -3,7 +3,11 @@ export type MessageStatus = 'complete' | 'streaming' | 'incomplete' | 'error';
 /** 'summary' 是新的记忆库（摘要库）唯一会写入的层级；另两个只用于识别迁移前的旧数据 */
 export type MemoryTier = 'summary' | 'recent' | 'permanent';
 /** 这一条摘要怎么来的：模型压缩 / 老条目本地合并 / 连续失败后的本地骨架 */
-export type MemoryOrigin = 'model' | 'merged' | 'local-skeleton';
+/**
+ * 'verbatim' = 压缩结果并不比原文短时的保底：直接保留原文（格式化成摘要条目）。
+ * 绝不为了「压成一句」而把 1 个字膨胀成一整句话——那样反而更占上下文。
+ */
+export type MemoryOrigin = 'model' | 'merged' | 'local-skeleton' | 'verbatim';
 export type ContextMode = 'recent' | 'all';
 export type RegexScope = 'global' | 'chat';
 export type RegexTarget = 'display' | 'prompt';

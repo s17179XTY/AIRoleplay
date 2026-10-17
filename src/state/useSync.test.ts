@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useSync } from './useSync';
 import { useData } from './useData';
 import { makeFakeServer, makeWorkerEnv, seedInvite } from '../test/fake-server';
-import { loadTokens, saveKdf, saveTokens, saveUsername } from '../core/sync/session';
+import { loadTokens, loadUsername, saveKdf, saveTokens, saveUsername } from '../core/sync/session';
 import { currentDbName, db, DEFAULT_DB_NAME, switchDatabase } from '../core/storage/db';
 import { TEST_KDF } from '../core/sync/kdf';
 
@@ -20,7 +20,7 @@ beforeEach(async () => {
   saveUsername(null);
   await switchDatabase(DEFAULT_DB_NAME);
   useSync.setState({
-    username: null, status: 'signed-out', pending: 0, conflicts: 0, quota: null, lastSyncAt: null, message: null,
+    username: null, status: 'signed-out', unlocked: false, pending: 0, conflicts: 0, quota: null, lastSyncAt: null, message: null,
   });
   useData.setState({ version: 0, reason: '' });
 });
@@ -40,6 +40,7 @@ describe('useSync', () => {
     expect(out.recoveryCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{52}$/);
     expect(useSync.getState().username).toBe('alice');
     expect(useSync.getState().status).toBe('idle');
+    expect(useSync.getState().unlocked).toBe(true);
     expect(currentDbName()).toBe('dsh-roleplay@alice');
     expect(loadTokens()?.accessToken).toBeTruthy();
   });
@@ -85,6 +86,7 @@ describe('useSync', () => {
 
     expect(useSync.getState().status).toBe('signed-out');
     expect(useSync.getState().username).toBeNull();
+    expect(useSync.getState().unlocked).toBe(false);
     expect(loadTokens()).toBeNull();
     expect(currentDbName()).toBe(DEFAULT_DB_NAME);
 
@@ -103,10 +105,31 @@ describe('useSync', () => {
     useSync.getState().refresh();
     expect(useSync.getState().status).toBe('locked');
     expect(useSync.getState().username).toBe('alice');
+    expect(useSync.getState().unlocked).toBe(false);
 
     await useSync.getState().unlock('pw-123', seams());
     expect(useSync.getState().status).toBe('idle');
+    expect(useSync.getState().unlocked).toBe(true);
     expect(currentDbName()).toBe('dsh-roleplay@alice');
+  });
+
+  it('解鎖時密碼錯誤：status 回到 locked、unlocked=false，不會變成已登入', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
+    // 模擬重新載入頁面：DEK 只在記憶體裡，所以要先解鎖
+    const { __resetSyncMemoryForTest } = await import('./useSync');
+    __resetSyncMemoryForTest();
+    useSync.getState().refresh();
+    expect(useSync.getState().status).toBe('locked');
+    expect(useSync.getState().unlocked).toBe(false);
+
+    await expect(useSync.getState().unlock('wrong-pass', seams())).rejects.toThrow();
+
+    // 被投訴的 bug：密碼錯卻看起來「登入成功」（畫面切到帳號面板）
+    expect(useSync.getState().status).toBe('locked');
+    expect(useSync.getState().unlocked).toBe(false);
+    expect(useSync.getState().message).toContain('帳號名或密碼');
+    expect(useSync.getState().username).toBe('alice');
+    expect(loadUsername()).toBe('alice');
   });
 
   it('login：換一台裝置（新庫）能用同一組密碼登入並解出同一把 DEK', async () => {
@@ -121,17 +144,43 @@ describe('useSync', () => {
 
     await useSync.getState().login({ username: 'alice', password: 'pw-123', ...seams() });
     expect(useSync.getState().status).toBe('idle');
+    expect(useSync.getState().unlocked).toBe(true);
     expect(currentDbName()).toBe('dsh-roleplay@alice');
     expect((await db.settings.get('fromA'))?.value).toBe('A'); // 拉回來了
   });
 
-  it('login：密碼錯時狀態變 error，不影響本地可用性', async () => {
+  it('login：本機沒有殘留 session 時密碼錯 → 未登入、unlocked=false、訊息保留', async () => {
     await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123', ...seams() });
     await useSync.getState().logout();
     saveKdf('alice', TEST_KDF);
     await expect(useSync.getState().login({ username: 'alice', password: 'wrong', ...seams() })).rejects.toThrow();
-    expect(useSync.getState().status).toBe('error');
+    expect(useSync.getState().status).toBe('signed-out');
+    expect(useSync.getState().unlocked).toBe(false);
     expect(useSync.getState().message).toContain('帳號名或密碼');
+  });
+
+  it('register 部分失敗（帳號已建好、第一次推送失敗）：unlocked 保持 true、狀態是 error', async () => {
+    await db.settings.put({ key: 'seed', value: '1' }); // 有東西要推，才會走到 push
+    const failingPush: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/sync/push')) {
+        return new Response('{"code":"boom","message":"推送炸了"}', { status: 500 });
+      }
+      return server(input, init);
+    };
+
+    await expect(
+      useSync.getState().register({
+        username: 'alice', inviteCode: INVITE, password: 'pw-123', fetchImpl: failingPush, baseUrl: BASE, kdf: TEST_KDF,
+      }),
+    ).rejects.toThrow();
+
+    // 帳號確實建好了：不能退回註冊表單，要讓使用者按「立即同步」重試
+    expect(useSync.getState().username).toBe('alice');
+    expect(useSync.getState().unlocked).toBe(true);
+    expect(useSync.getState().status).toBe('error');
+    expect(useSync.getState().message).toBeTruthy();
+    expect(loadTokens()?.accessToken).toBeTruthy();
   });
 
   it('沒有設定後端位址時給出明確訊息（不是靜靜失敗）', async () => {

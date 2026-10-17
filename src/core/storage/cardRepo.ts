@@ -19,6 +19,10 @@ export async function saveCardPackage(pkg: CardPackage): Promise<string> {
     description: pkg.json.description || '',
     tags: pkg.json.tags ?? [],
     coverAssetId: existing?.coverAssetId,
+    // 头像也要沿用：record 是整个对象覆盖写入，漏掉这一栏就等于「重存一次头像没了」。
+    // 下面循环里的 `json.avatar === path` 只能补回「字节也在包里」的情况，
+    // 一旦这次保存没带 assets（导出包默认不含图、草稿从别处来），就永远补不回来。
+    avatarAssetId: existing?.avatarAssetId,
     source: existing?.source ?? 'local',
     spec: CARD_SPEC,
     createdAt: existing?.createdAt ?? now,
@@ -70,7 +74,42 @@ export async function loadCardPackage(cardId: string): Promise<CardPackage | nul
     assets.push({ path: r.path, mime: asset.mime, bytes: new Uint8Array(asset.bytes) });
   }
   json.id = cardId;
+  // card.json 里的 cover / avatar 可能被旧版本编辑器抹掉，或与真实文件名对不上（导入的卡）。
+  // 用 record 里的引用把界面要解析的字段补回来——只补内存里的对象，不写回数据库。
+  const available = new Set(assets.map((a) => a.path));
+  backfillImageRefs(cardId, record, json, available);
   return { json, texts, assets };
+}
+
+/** `<cardId>:<path>` → `<path>`；格式不同（旧数据 / 手工写库）就退回「取第一个冒号之后」 */
+function assetPathOf(cardId: string, assetId: string | undefined): string | undefined {
+  if (!assetId) return undefined;
+  const prefix = cardId + ':';
+  if (assetId.startsWith(prefix)) return assetId.slice(prefix.length) || undefined;
+  const cut = assetId.indexOf(':');
+  return (cut >= 0 ? assetId.slice(cut + 1) : assetId) || undefined;
+}
+
+/**
+ * 卡片图片引用的自愈：
+ * 只要 record 记着这张图（coverAssetId / avatarAssetId）而 card.json 的字段空了、
+ * 或者指向的路径在卡片包里根本不存在，就用 record 的路径顶上。
+ */
+function backfillImageRefs(
+  cardId: string,
+  record: CardRecord,
+  json: CardPackage['json'],
+  available: Set<string>,
+): void {
+  const fill = (key: 'cover' | 'avatar', assetId: string | undefined) => {
+    const stored = json[key];
+    if (stored && available.has(stored)) return; // card.json 自己就对，别动它
+    const path = assetPathOf(cardId, assetId);
+    if (!path || !available.has(path)) return;
+    json[key] = path;
+  };
+  fill('cover', record.coverAssetId);
+  fill('avatar', record.avatarAssetId);
 }
 
 export async function ensureSeedCard(): Promise<string> {

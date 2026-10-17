@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExchanges, computeWindow } from './window';
+import { buildExchanges, computeWindow, coveredEndIndex } from './window';
 
 const M = (id: string, role: 'user' | 'assistant') => ({ id, role });
 
@@ -70,5 +70,19 @@ describe('上下文窗口与成对规则', () => {
 
   it('空输入回两个空数组', () => {
     expect(computeWindow({ messages: [], mode: 'recent', limit: 6 })).toEqual({ windowIds: [], outsideIds: [] });
+  });
+
+  it('coveredEndIndex：没有摘要 → -1', () => {
+    expect(coveredEndIndex([M('u1', 'user'), M('a1', 'assistant')], [])).toBe(-1);
+  });
+
+  it('coveredEndIndex：toMessageId 在路径上 → 返回它的下标（已压成摘要的前缀）', () => {
+    const msgs = [M('u1', 'user'), M('a1', 'assistant'), M('u2', 'user'), M('a2', 'assistant')];
+    expect(coveredEndIndex(msgs, [{ toMessageId: 'a1' }, { toMessageId: 'u2' }])).toBe(2);
+  });
+
+  it('coveredEndIndex：摘要指向别的分支（id 不在路径上）→ -1（宁可重复也不丢）', () => {
+    const msgs = [M('u1', 'user'), M('a1', 'assistant')];
+    expect(coveredEndIndex(msgs, [{ toMessageId: 'gone' }])).toBe(-1);
   });
 });

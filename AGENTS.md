@@ -44,7 +44,8 @@
 ## 3. 目录地图
 
     src/core/assembler/   装配内核：条目模型、宏、世界书触发、token 预算、装配顺序（assemble.ts）、
-                          window.ts（上下文窗口与成对规则）、summarize.ts（摘要压缩请求与解析）
+                          window.ts（窗口/成对规则/摘要覆盖前缀）、summaryPlan.ts（压哪几对、怎么分组）、
+                          summarize.ts（摘要压缩请求与解析）
     src/core/render/      渲染内核：思维链/记忆/选项提取、白名单清洗、渲染管线
     src/core/providers/   适配内核：OpenAI 兼容、Anthropic、SSE 解析、mock、能力矩阵、默认参数
     src/core/storage/     存储内核：Dexie schema、卡片仓库(zip)、摘要库(memoryStore)、备份、seed、
@@ -55,7 +56,8 @@
     src/ui/play/          PlayScreen（聊天）、Composer（输入列 + 上下文图标）、MessageBubble、CardPagePanel
     src/ui/cards/         CardListScreen、CardEditorScreen、ImageSlots、draft.ts（草稿↔卡包）、useAssetUrl
     src/ui/settings/      SettingsScreen、AccountSection、ModSection、DevicesPanel、ConflictPanel
-    src/state/            Zustand：useSession（会话/上下文/摘要）、useNav、useSetting、useSync（账号/同步）、useData（换库广播）
+    src/state/            Zustand：useSession（会话/上下文/摘要）、useNav、useSetting、useSync（账号/同步）、
+                          useComposer（输入框草稿，切页不丢）、useData（换库广播）
     src/assets/cards/     内置卡的原始文件（ui.html 用 ?raw 打进包里）
     scripts/              真实浏览器验收探针（cdp-ui-check.mjs / cdp-ui-check2.mjs）
     docs/superpowers/     设计文档与实施计划
@@ -111,14 +113,17 @@
      并检查 `documentElement.scrollWidth > clientWidth`。
    - 探针一：`node scripts/cdp-ui-check.mjs <port> <url>`（走 `node.exe`；截图写到 gitignore 的 `shots/`）。
      验：字级即时生效、输入框到导航的间距、等待提示 + 停止钮、记忆区块仍在讯息里、
-     `button button` 必须为 0、往上滑不再被拉回底部、**console 零警告**。
+     `button button` 必须为 0、往上滑不再被拉回底部、**单颗方向滚动钮**（上滚=回顶/下滚=回底）、**console 零警告**。
    - 探针二：`node scripts/cdp-ui-check2.mjs <port> <url>`。验：
      `body` 底色是白的、底部导航按钮 ≥ 56px、顶栏**不含**「上下文」二字、
      上下文图标在输入框与发送键**之间**且显示数字、按下才出明细（分项 + 合计 + 百分比）、
-     ⋮ 菜单按下才展开（含 对话/MOD/记忆）、设置页的上下文模式/条数/摘要开关/压缩阈值/MOD 分节/上下文大小滑块、
-     聊 4 轮后**真的生成摘要**、MOD 面板、右下角两个只有图标的滚动钮、对话列表右侧图标与「对话N」命名。
+     ⋮ 菜单按下才展开（含 对话/MOD/记忆）、右上角 **+ 新对话**、图标无边框、菜单宽度适配文字、
+     设置页的上下文模式/条数/摘要开关/压缩阈值/MOD 分节/上下文大小滑块、
+     聊 4 轮后**真的生成摘要**、MOD 面板、单颗方向滚动钮、对话列表右侧图标与「对话N」命名。
    - 两个探针都会用同一个浏览器 profile，**重复跑会看到上一轮留下的资料**（摘要条数会累加）——
      断言要写成「存在」而不是「等于某个数」。
+   - 账号/同步有第三支端到端探针 `shots/e2e-account.mjs`（gitignore；需要本机 Worker 8787 在跑）：
+     注册 → 首次同步 → 用 token 直接 pull → 重新载入 → 错密码不能进面板 → 正确密码解锁。
    - `Runtime.enable` 会回放这个 target 之前的 console，所以**导航之后要先清空 logs 数组**再判定。
      退出前会印一行 JSON，`"pass": true` 才算过。**本地和线上各跑一次。**
 4. `git commit`（中文提交信息，`fix:` / `feat:` / `chore:` 前缀）。提交信息写**为什么**，不只写改了什么。
@@ -210,6 +215,21 @@
 | 底部导航按钮太小 | `.dsh-chip` 自带 padding，`py-*` 被它盖掉（同权重、声明顺序在后） | 用 `min-h-[64px]` 控制高度（min-height 不会被 padding 规则盖）。**`.dsh-chip` 上不要用 py-\*，会被吃掉。** |
 | 占用百分比永远是 0% | 默认 `contextLength` 是 **100 万**，几千 token 就是 0% | 默认改成 **12.8 万**（真实模型量级），阈值压缩才有意义 |
 
+### 第三轮使用者实测回報後補上的坑（2026-10-18，全是真 bug）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| **注册/登录成功，但同步永远失败、云端空间 0 B、跳出「伺服器內部錯誤」** | Cloudflare D1 每个 prepared statement **最多 100 个绑定参数**。`handlePull` 用 50 组 `(kind,id)` 拼 OR，参数是 1 个 userId + 50×2 = **101** → 真 D1 抛错 → worker 顶层 catch 成 500；首次同步 initialPush >50 笔后第一页 pull 必踩。单元测试用的 `node:sqlite` 上限 32766，所以一直没抓到 | `PAIR_CHUNK = floor((100-1)/2) = 49`；回归测试包一层 D1 代理统计 `bind` 参数数，>100 直接 throw。**任何按「组」拼占位符的查询都要先扣掉固定参数。** |
+| **密码错误仍看起来「登入成功」**（直接进账号面板、云端空间 0 B / 1 B、同步失败） | AccountSection 的已登录分支条件只有 `username && status !== signed-out/locked`，而密码错只是把 status 设成 `error` —— 「DEK 到底解出来没有」从来没有被表达 | useSync 新增显式 `unlocked`（只有本次页面成功解出 DEK 才 true）；login 失败回到 `locked`/`signed-out`；面板判据改成 `username && unlocked`。**登录态的 UI 判据不能靠「错误状态之外的状态」。** |
+| **摘要越压越大：原文 + 摘要双份注入、每轮都在压同一批** | 窗口 `computeWindow` 不知道摘要覆盖了哪些消息；压完的交换仍留在 `history` 里，于是「压了也不省」，阈值一触发就再压下一批 | `window.ts` 加 `coveredEndIndex()`：**已压成摘要的消息前缀不再进提示词**，窗口从覆盖点之后算起；all 模式用 assemble 的 `dropped` 按**整对**回退（`trimHistoryToExchanges`）。「压哪几对」抽成纯函数 `summaryPlan.ts`，有单测。 |
+| **「攒够 2 对再压缩」实际压成 2 条摘要** | 旧实现一次请求压多对、回来拆成多条存储 | `summaryBatchPairs` 现在的语义 = **攒够 N 对 → 合成 1 条摘要**（`planSummaryGroups` 分组）；字数上限按 N 放大（`maxChars = SUMMARY_MAX_CHARS × N`），否则 200 字装不下多条对话。 |
+| **压缩后的内容比原文还长**（1 个字压成一整句） | 提示词只要求「文学笔法、保留细节」，没要求比原文短 | 摘要提示词加硬规则「必须比原文更短」；存储前在**模型摘要 / 本地骨架 / 原文保留**三者里取最短（新增 `origin: verbatim`），都不更短就保留原文；界面标「原文保留（已是最短）」。 |
+| **聊天头像不生效** | 三层叠加：① `saveCardPackage` 整笔覆盖 record 时只沿用 `coverAssetId`，漏掉 `avatarAssetId`；② `loadCardPackage` 从不拿 record 的图片引用核对 card.json；③ 界面只做 path 全等匹配、头像缺失时不回退封面 | record 沿用两栏 + `backfillImageRefs()`（只回填内存、不写库）；新建 `ui/cards/cardAssets.ts`：path 全等 → basename → 大小写兜底，**头像缺失回退封面**。 |
+| **卡片图被塞进 48×48 小方块** | 列表把封面当「行内小图标」用 | 卡片列表改成「整张卡」：封面通栏 16:10 大图，名字/简介/按钮在图下方。 |
+| **切去别的 tab 再回来，输入框里的字没了** | 草稿是 Composer 的 `useState`，PlayScreen 卸载就丢 | 草稿移到模组层 `state/useComposer.ts`（按 chatId 分），发送成功才清。**任何「组件卸载后还要留着」的输入状态都不该放组件 state。** |
+| 上下滚动按钮方向看反了、两个按钮同时出现 | 旧实现只要 `follow === false` 就同时给「回顶/回底」 | 单颗浮钮 + 方向感：往上滚＝向上三角「回到顶部」、往下滚＝三角**向左旋转**成向下「回到底部」；渐入渐出、有阴影、到顶/到底淡出。 |
+| 菜单右上一堆空位、图标带边框 | 菜单写死 `w-44`；⋮ 与上下文图标套了 `.dsh-chip`（自带 border+shadow） | 菜单 `w-max min-w-[6.5rem] whitespace-nowrap`；两个图标按钮改成无边框圆形纯图标；顶部新增 **+ 新对话**（生成中禁用）。 |
+
 ## 7. 数据模型与关键规则
 
 - `messages` 是**树**（`parentId` + `chats.currentLeafId`）：重新生成 = 挂第二个孩子，回溯 = 把 currentLeafId 指回历史节点。
@@ -243,13 +263,22 @@
   「条」= user 与 assistant 各算一条，**不含本轮输入**；窗口边界**永不切开一个交换**（向外扩）。
 - **记忆库 = 摘要库**（`memories` 表，`tier: 'summary'`）。旧的 `recent` / `permanent` 只在迁移期存在
   （`migrate.ts` 逐条删除 + `memorySchema` 标记，只跑一次）。
+- **已压成摘要的消息不再进提示词**：窗口从「最后一条摘要覆盖的消息」之后算起（`coveredEndIndex`）。
+  这是第三轮最关键的一条——否则「原文 + 摘要」双份注入、越压越大。
 - **什么时候压**（两个触发取先到者）：
   ① 交换掉出窗口（`recent` 模式必须压，否则那段直接丢失）；
   ② **上下文占用 ≥ `settings.summaryTriggerPercent`**（默认 90，可设 50–92）。
-- **压多少**：压到约 `SUMMARY_TARGET_PERCENT`（75%）就停手；一次最多 `SUMMARY_MAX_PAIRS_PER_RUN`（6）对，
-  不够下一轮继续。摘要也计入 token 预算，超预算时照样会被裁。
-- **一对一项摘要**：一次请求可以压多对（提示词要求 `### 1` `### 2` 编号），回来**拆成多条**存储。
-- `SUMMARY_MAX_CHARS=200` / `SUMMARY_KEEP=100` / `SUMMARY_MERGE_BATCH=10`（超上限时最老 10 条本地合并）。
+- **压哪几对 / 怎么分组**：纯函数 `assembler/summaryPlan.ts` 的 `planSummaryGroups()`（有单测）。
+  没到阈值时只压窗口外的、且**攒够 `summaryBatchPairs` 对才动手**（余数留到下一轮）；达到阈值时从最老的开始压，
+  压到约 `SUMMARY_TARGET_PERCENT`（75%）停手，一次最多 `SUMMARY_MAX_PAIRS_PER_RUN`（6）对。
+- **攒够 N 对 → 合成 1 条摘要**（`summaryBatchPairs` 的语义，不是每对一条）。字数上限按 N 放大
+  （`maxChars = SUMMARY_MAX_CHARS × N`）。
+- all 模式靠 assemble 预算裁剪，裁完按**整对**回退（`trimHistoryToExchanges`），被裁的那段进摘要库，
+  不能出现「没进提示词、也没进摘要」的黑洞。
+- **压缩结果不能比原文长**：模型摘要 / 本地骨架 / 原文保留（`origin: 'verbatim'`）三者取最短；
+  都不更短就保留原文。**绝不为了「压成一句」而把 1 个字膨胀成一整句。**
+- `SUMMARY_MAX_CHARS=200`（单对）/ `SUMMARY_KEEP=100` / `SUMMARY_MERGE_BATCH=10`（超上限时最老 10 条本地合并；
+  合并条目上限是 `200×10`，**不能按单对的 200 字截断**——它是唯一的历史载体）。
 - 失败：连续 `SUMMARY_FAIL_LIMIT`（3）次 → 退化为本地骨架摘要（`origin: 'local-skeleton'`），UI 会标出来。
 - `settings.summaryEnabled`（默认开）；压缩期间 `summarizing = true`，**禁止发送**。
 
@@ -269,7 +298,10 @@
   设置页「MOD」分节管理；聊天页 ⋮ 菜单里能当场开关。
 - **图片**：卡片封面 / 头像存 `assets` 表（`cardFiles` kind='asset'），走既有的加密 blob 通道。
   `card.json.cover` / `card.json.avatar` 是 assets 里的路径，`cardRepo` 会映射成
-  `record.coverAssetId` / `record.avatarAssetId`。导出卡片**默认不含图**（询问后可含）；「导出全部数据」的备份一定带图。
+  `record.coverAssetId` / `record.avatarAssetId`（**保存时两栏都要沿用**，否则整笔覆盖会丢）。
+  `loadCardPackage` 会用 record 引用回填 card.json 里缺失/失效的图片字段（只改内存、不写库）。
+  界面解析走 `ui/cards/cardAssets.ts`：path 全等 → basename → 大小写兜底，**头像缺失回退封面**。
+  卡片列表的封面是**整卡通栏大图**（16:10），不是小方块。导出卡片**默认不含图**（询问后可含）；「导出全部数据」的备份一定带图。
   校验在 `src/core/storage/image.ts`：magic byte 白名单（PNG/JPEG/GIF/WebP）、**拒绝 SVG**、
   原图 ≤10 MB、最长边 ≤4096，再压到封面 512 / 头像 128。
 - **账号分库**：`db` 是可换的连接（`export let db` + `openDatabase/switchDatabase`）。未登录 `dsh-roleplay`，
@@ -284,7 +316,7 @@
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**60 个测试文件 / 400 个用例全绿**，构建通过。
+改之前先跑一遍确认基线：**62 个测试文件 / 436 个用例全绿**，构建通过。
 
 关键回归测试：
 - 装配顺序 / 世界书触发 / 正则替换 / 白名单清洗（含 XSS）/ 卡片 zip 往返 / 酒馆卡互转 / 卡片自愈 / 草稿态不落库 / 布局约束。
@@ -292,11 +324,15 @@
 - 会话：**「停止」在任何时刻按下都要生效**、**第一个字之前停止要撤回讯息并回填输入框**、
   **「重新生成」不得多插使用者讯息**、**「从这里重开」会自动生成**、生成期间输入框锁住、
   `init()` 幂等（切页面不被截停）、换库后 `reload()`。
-- 上下文与摘要：**窗口不切开一个交换（向外扩）**、半对不压、**一对一项摘要**、
-  **多段输出能按 `### n` 拆开**、连续失败退化为骨架、库上限 100 与合并 10。
+- 上下文与摘要：**窗口不切开一个交换（向外扩）**、半对不压、**已压摘要的前缀不再进提示词**、
+  **攒够 N 对合成 1 条**（`summaryPlan.test.ts`：没到阈值只压窗口外、余数留到下一轮、达阈值从最老开始压）、
+  **多段输出能按 `### n` 拆开**、**压缩结果不比原文长（verbatim 兜底）**、连续失败退化为骨架、库上限 100 与合并 10。
+- 后端：**D1 单语句绑定参数 ≤100**（`withD1ParamLimit` 代理 + 60 笔 pull 回归）。
 - 同步：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径、rev 递增与冲突副本、墓碑、
   **秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、**两边都有资料的取舍四步**、两装置端到端一致。
-- 图片：**伪装的 .png 被拒、SVG 被拒、超限被拒、导出可不含图**。
+- 图片：**伪装的 .png 被拒、SVG 被拒、超限被拒、导出可不含图**、**保存后 avatarAssetId 不丢**、
+  头像解析 path 全等/basename 兜底/回退封面。
+- 账号：**解锁密码错不能显示已登录面板**（`unlocked` 判据）、错密码保留 locked + 错误信息、正确密码才出账号面板。
 
 后端逻辑用 `node:sqlite`（Node 24 内置）当 D1 替身跑**真 SQL**；workerd 特有的行为靠 `worker/smoke.mjs`。
 删除帐号端点另有 `worker/test/account.test.ts`。
@@ -305,10 +341,11 @@
 
 ### 现在的状态
 
-- 最后一个提交：`d1dd13c`（已推 GitHub，工作区干净）。
-- 线上：前端 https://cc7ba06c.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
-  Worker https://dsh-sync-api.s17179xty.workers.dev （version `cf509837-2869-4185-acfd-237f30c5b10f`）。
-- 测试 60 档 / 400 例全绿；build 无错；两个浏览器探针在**本地与线上**都是 `pass: true`、console 零警告。
+- 第三轮实测修复后的提交：见 `git log`（本轮含 D1 参数上限、摘要窗口/语义、账号 unlocked、卡片图/头像、UI 三处）。
+- 线上：前端 https://601f15e4.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
+  Worker https://dsh-sync-api.s17179xty.workers.dev （version `72730f34-655d-4102-a630-a4deaf914bd7`）。
+- 测试 62 档 / 436 例全绿；build 无错；两个浏览器探针在**本地与线上**都是 `pass: true`、console 零警告；
+  账号/同步端到端探针 `shots/e2e-account.mjs` 本地与线上都全过（注册→同步→重载锁定→错密码被挡→正确密码解锁）。
 - 规格与计划：
   `docs/superpowers/specs/2026-10-15-context-summary-mod-images-design.md`、
   `docs/superpowers/plans/2026-10-15-context-summary-mod-images.md`
@@ -320,10 +357,12 @@
    如果使用者抱怨内置卡的「记忆结构定义」和现在的摘要库对不上，先问他要不要覆盖。
 2. **「以云端为准」时本地被覆盖的那一版没有留档**。现在 `syncConflicts` 里存的只有「推送被拒、服务器赢」的那一版。
    要做的话：在 pull 覆盖前把本地行抓成副本塞进 `syncConflicts`。
-3. **摘要质量只靠提示词**，没有评估集。如果使用者说「摘要记得不对」，先看 `summarize.ts` 的提示词与
-   `SUMMARY_MAX_CHARS`，再看窗口是不是太小（`contextMessageLimit`）。
+3. **摘要质量只靠提示词**，没有评估集：`verbatim` 兜底只保证「不膨胀」，不代表摘要一定记得好。
+   如果使用者说「摘要记得不对」，先看 `summarize.ts` 的提示词与 `SUMMARY_MAX_CHARS`，再看
+   `summaryBatchPairs`（攒得越多、一条摘要越难写全）与窗口是不是太小（`contextMessageLimit`）。
 4. **图片压缩走 canvas**，jsdom 里没有 canvas，所以单元测试只覆盖校验逻辑；真实压缩只在浏览器有效。
-5. `docs/superpowers/` 里的旧 spec / plan 没有随第二轮改动更新。
+5. `docs/superpowers/` 里的旧 spec / plan 没有随第二、三轮改动更新（以本文件 §7 为准）。
+6. 探针脚本的 CDP 截图在 `shots/`（已 gitignore）；重跑同一 profile 会累积资料，断言都写成「存在」。
 
 ### 修 bug 的标准流程
 

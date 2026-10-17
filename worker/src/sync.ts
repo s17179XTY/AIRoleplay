@@ -13,7 +13,16 @@ export const MAX_PULL_LIMIT = 200;
 export const MAX_PUSH_BATCH = 20;
 export const MAX_ROW_BYTES = 262144;
 export const CONFLICT_INLINE_BYTES = 65536;
-const PAIR_CHUNK = 50; // D1 單次查詢最多 100 個綁定參數 → 一次抓 50 組 (kind,id)
+/**
+ * Cloudflare D1 對單一 prepared statement 的綁定參數有 100 的硬上限，超過就整條查詢失敗，
+ * 被 worker 最外層 catch 變成 500。這個上限是「綁定參數」不是「? 個數」，所以要把
+ * 固定參數（user_id 1 個）先扣掉再換算每批幾組 (kind, id)：
+ *   floor((100 - 1) / 2) = 49 組 → 99 個參數。
+ * 舊版寫死 50 組 → 1 + 50*2 = 101，第一次同步（initialPush > 50 筆）之後的 pull 必定失敗。
+ */
+export const MAX_BOUND_PARAMS = 100;
+const PARAMS_PER_PAIR = 2;
+const PAIR_CHUNK = Math.floor((MAX_BOUND_PARAMS - 1) / PARAMS_PER_PAIR);
 
 export interface PushRecord {
   kind: string;

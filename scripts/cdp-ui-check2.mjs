@@ -122,8 +122,31 @@ report.menu.items = await evaluate(`(() => {
   return p ? p.innerText.replace(/\\s+/g, ' ').trim() : '';
 })()`);
 await shot('u3-menu');
+report.menuStyle = await evaluate(`(() => {
+  const p = document.querySelector('[data-testid="play-menu-panel"]');
+  const items = p ? [...p.querySelectorAll('button')] : [];
+  const maxItem = items.reduce((m, b) => Math.max(m, b.scrollWidth), 0);
+  return {
+    panelWidth: p ? Math.round(p.getBoundingClientRect().width) : 0,
+    maxItemWidth: Math.round(maxItem),
+    itemCount: items.length,
+  };
+})()`);
 await evaluate(`document.querySelector('[data-testid="play-menu"]').click()`);
 await sleep(300);
+
+// 1c) 圖示不要邊框（使用者要求）：上下文圖示與 ⋮ 菜單鈕都應該是無框的
+report.iconStyle = await evaluate(`(() => {
+  const pick = (el) => el ? {
+    border: getComputedStyle(el).borderTopWidth,
+    shadow: getComputedStyle(el).boxShadow,
+  } : null;
+  return {
+    context: pick(document.querySelector('[data-testid="context-button"]')),
+    menu: pick(document.querySelector('[data-testid="play-menu"]')),
+    plus: pick(document.querySelector('[data-testid="play-new-chat"]')),
+  };
+})()`);
 
 // 2) 改設定：只帶最近 4 條，然後聊 4 輪，看摘要庫
 await evaluate(`(() => {
@@ -232,25 +255,71 @@ await shot('u2-mod');
 await clickText('关闭');
 await sleep(300);
 
-// 5) 往上滑 → 圖示按鈕
+// 5) 單顆浮動鈕：往下滚 → 回到底部（向下三角）；往上滚 → 回到顶部（向上三角，向左旋转回来）
 await evaluate(`(() => {
   const el = document.querySelector('[data-testid="message-scroll"]');
   el.scrollTop = 0;
   el.dispatchEvent(new Event('scroll', { bubbles: true }));
+  el.scrollTop = Math.min(600, el.scrollHeight - el.clientHeight);
+  el.dispatchEvent(new Event('scroll', { bubbles: true }));
   return el.scrollTop;
 })()`);
 await sleep(400);
-report.scrollIcons = await evaluate(`(() => {
+report.scrollDown = await evaluate(`(() => {
+  const bottom = document.querySelector('[data-testid="scroll-to-bottom"]');
+  const top = document.querySelector('[data-testid="scroll-to-top"]');
+  const btn = bottom;
+  return {
+    bottom: Boolean(bottom), top: Boolean(top),
+    iconOnly: btn ? btn.textContent.trim() === '' : false,
+    hasSvg: Boolean(btn && btn.querySelector('svg')),
+    noBorder: btn ? getComputedStyle(btn).borderTopWidth === '0px' : false,
+    hasShadow: btn ? getComputedStyle(btn).boxShadow !== 'none' : false,
+  };
+})()`);
+await shot('u2-scroll-bottom');
+
+await evaluate(`(() => {
+  const el = document.querySelector('[data-testid="message-scroll"]');
+  el.scrollTop = Math.max(0, el.scrollTop - 300);
+  el.dispatchEvent(new Event('scroll', { bubbles: true }));
+  return el.scrollTop;
+})()`);
+await sleep(400);
+report.scrollUp = await evaluate(`(() => {
   const top = document.querySelector('[data-testid="scroll-to-top"]');
   const bottom = document.querySelector('[data-testid="scroll-to-bottom"]');
   return {
     top: Boolean(top), bottom: Boolean(bottom),
-    topIsIconOnly: top ? top.textContent.trim() === '' : false,
-    bottomIsIconOnly: bottom ? bottom.textContent.trim() === '' : false,
-    hasSvg: Boolean(bottom && bottom.querySelector('svg')),
+    iconOnly: top ? top.textContent.trim() === '' : false,
+    hasSvg: Boolean(top && top.querySelector('svg')),
   };
 })()`);
-await shot('u2-scroll-icons');
+await shot('u2-scroll-top');
+
+// 5b) 右上角 + 按鈕：新增對話
+const countChats = async () => evaluate(`(async () => {
+  const req = indexedDB.open('dsh-roleplay');
+  return new Promise((resolve) => {
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction('chats', 'readonly');
+      const c = tx.objectStore('chats').count();
+      c.onsuccess = () => resolve(c.result);
+      c.onerror = () => resolve(-1);
+    };
+    req.onerror = () => resolve(-1);
+  });
+})()`);
+const chatsBefore = await countChats();
+report.plusButton = await evaluate(`(() => {
+  const btn = document.querySelector('[data-testid="play-new-chat"]');
+  return { exists: Boolean(btn), iconOnly: btn ? btn.textContent.trim() === '' : false };
+})()`);
+await evaluate(`document.querySelector('[data-testid="play-new-chat"]').click()`);
+await sleep(900);
+report.plusButton.chatsBefore = chatsBefore;
+report.plusButton.chatsAfter = await countChats();
 
 // 6) 對話列表右側圖示 + 新對話從「對話N」開始命名（入口在 ⋮ 菜單裡）
 await openViaMenu('对话');
@@ -278,14 +347,21 @@ report.pass =
   report.afterChat.ringIsNumber &&
   report.hudDetail.title && report.hudDetail.system && report.hudDetail.total && report.hudDetail.hasPercent &&
   report.menu.closedBefore && /记忆/.test(report.menu.items) && /对话/.test(report.menu.items) &&
+  report.menuStyle.panelWidth > 40 && report.menuStyle.panelWidth <= report.menuStyle.maxItemWidth + 40 &&
+  report.iconStyle.context && report.iconStyle.context.border === '0px' && report.iconStyle.context.shadow === 'none' &&
+  report.iconStyle.menu && report.iconStyle.menu.border === '0px' && report.iconStyle.menu.shadow === 'none' &&
+  report.iconStyle.plus && report.iconStyle.plus.border === '0px' &&
   report.settings.contextSection && report.settings.modeRecent && report.settings.modeAll &&
   report.settings.contextLimit && report.settings.summaryToggle &&
   report.settings.triggerField && report.settings.triggerHint &&
   report.settings.modSection && report.settings.contextSizeSlider &&
   report.memorySheet.opened && report.memorySheet.summaryCount > 0 &&
   report.modSheet.opened && report.modSheet.hint &&
-  report.scrollIcons.top && report.scrollIcons.bottom &&
-  report.scrollIcons.topIsIconOnly && report.scrollIcons.bottomIsIconOnly && report.scrollIcons.hasSvg &&
+  report.scrollDown.bottom && !report.scrollDown.top &&
+  report.scrollDown.iconOnly && report.scrollDown.hasSvg && report.scrollDown.noBorder && report.scrollDown.hasShadow &&
+  report.scrollUp.top && !report.scrollUp.bottom && report.scrollUp.iconOnly && report.scrollUp.hasSvg &&
+  report.plusButton.exists && report.plusButton.iconOnly &&
+  report.plusButton.chatsAfter === report.plusButton.chatsBefore + 1 &&
   report.chatList.renameIcons > 0 && report.chatList.deleteIcons > 0 && report.chatList.svgIcons > 0 &&
   report.chatList.numberedName &&
   logs.length === 0;

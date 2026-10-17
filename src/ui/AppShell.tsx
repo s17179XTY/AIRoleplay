@@ -59,7 +59,7 @@ export default function AppShell() {
         </div>
       )}
 
-      <nav className="dsh-tabbar safe-bottom flex shrink-0 items-center gap-2.5 px-3.5 pb-1 pt-2">
+      <nav className="dsh-tabbar safe-bottom flex shrink-0 items-center gap-2 px-3 pb-0.5 pt-1.5">
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -67,12 +67,12 @@ export default function AppShell() {
             onClick={() => setTab(t.key)}
             className={
               // 注意：.dsh-chip 自带 padding，Tailwind 的 py-* 会被它盖掉 —— 用 min-h 控制高度才有效
-              'dsh-chip flex-1 flex-col justify-center gap-1.5 border-transparent bg-transparent min-h-[64px] text-[13px] ' +
+              'dsh-chip flex-1 flex-col justify-center gap-1 border-transparent bg-transparent min-h-[56px] px-2 py-1 text-[12px] ' +
               (tabActive(t.key) ? 'dsh-chip-active' : '')
             }
           >
-            <span className="text-[19px] leading-none">{t.icon}</span>
-            <span className="text-[12px] leading-none">{t.label}</span>
+            <span className="text-[17px] leading-none">{t.icon}</span>
+            <span className="text-[11px] leading-none">{t.label}</span>
           </button>
         ))}
       </nav>

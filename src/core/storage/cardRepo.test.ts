@@ -88,3 +88,64 @@ describe('卡片仓库', () => {
     expect(await db.cards.count()).toBe(0);
   });
 });
+
+describe('卡片头像与封面引用', () => {
+  const AVATAR = 'assets/avatar.png';
+  const COVER = 'assets/cover.png';
+
+  /** 一张带头像 + 封面的卡 */
+  const withImages = () => {
+    const pkg = mkPkg();
+    pkg.json.cover = COVER;
+    pkg.json.avatar = AVATAR;
+    pkg.assets.push({ path: AVATAR, mime: 'image/png', bytes: new Uint8Array([137, 80, 78, 71, 1, 2, 3]) });
+    return pkg;
+  };
+
+  /** 模拟「card.json 里的图片字段被清掉」（旧编辑器 / 别的装置写回来的卡） */
+  const clearImageFields = async (id: string) => {
+    const row = await db.cardFiles.get([id, 'card.json']);
+    const json = JSON.parse(row!.text!) as Record<string, unknown>;
+    delete json.cover;
+    delete json.avatar;
+    await db.cardFiles.put({ ...row!, text: JSON.stringify(json) });
+  };
+
+  it('保存时会记下头像：json.avatar、assets、record.avatarAssetId 都对得上', async () => {
+    const id = await saveCardPackage(withImages());
+
+    const record = await db.cards.get(id);
+    expect(record!.avatarAssetId).toBe(id + ':' + AVATAR);
+    expect(record!.coverAssetId).toBe(id + ':' + COVER);
+
+    const loaded = await loadCardPackage(id);
+    expect(loaded!.json.avatar).toBe(AVATAR);
+    expect(loaded!.assets.find((a) => a.path === AVATAR)?.bytes.byteLength).toBe(7);
+  });
+
+  it('record 有 avatarAssetId 但 card.json 的字段被清掉 → load 用 record 回填', async () => {
+    const id = await saveCardPackage(withImages());
+    await clearImageFields(id);
+
+    const loaded = await loadCardPackage(id);
+    expect(loaded!.json.avatar).toBe(AVATAR);
+    expect(loaded!.json.cover).toBe(COVER);
+    // 回填只给界面解析用，不该把数据库里的 card.json 改掉
+    const row = await db.cardFiles.get([id, 'card.json']);
+    expect((JSON.parse(row!.text!) as Record<string, unknown>).avatar).toBeUndefined();
+  });
+
+  it('重存一份不含图片字节的包（导出后再导入）不会把头像引用弄丢', async () => {
+    const pkg = withImages();
+    const id = await saveCardPackage(pkg);
+
+    const noAssets = unpackCard(packCard(pkg, { includeAssets: false }));
+    expect(noAssets.assets).toHaveLength(0);
+    noAssets.json.id = id;
+    await saveCardPackage(noAssets);
+
+    const record = await db.cards.get(id);
+    expect(record!.avatarAssetId).toBe(id + ':' + AVATAR);
+    expect(record!.coverAssetId).toBe(id + ':' + COVER);
+  });
+});

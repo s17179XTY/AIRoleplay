@@ -148,8 +148,10 @@ export default function CardEditorScreen({ cardId }: { cardId: string | null }) 
           <>
             <div className="dsh-card p-3.5 text-[11px] leading-relaxed text-slate-500">
               实际注入顺序：<br />
-              卡片前缀词 → 全局提示词 → 全局前缀词 → 卡片提示词 → MOD → 主人公设定 → 前情提要
-              → 互动页的【初始信息设定】 → 世界书 → 更早的对话摘要 → 历史消息 → 全局后缀词 → 卡片后缀词 → 本轮输入
+              ① 系统提示词（卡片提示词 → MOD）→ ② 前置词（卡片前置词 → 全局前置词）→ ③ 全局提示词
+              → ④ 互动页的【初始信息设定】→ ⑤ 世界书 → ⑥ 更早的对话摘要 → ⑦ 历史消息
+              → ⑧ 后置词（全局后置词 → 卡片后置词）→ ⑨ 本轮输入
+              <br />（主人公设定 / 前情提要**不注入**：它们由互动页产出的「初始信息设定」取代）
             </div>
             <Field label="卡片前缀词（整份提示词的最前面）">
               <textarea className={inputClass} rows={5} value={draft.json.prompts.pre}

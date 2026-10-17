@@ -121,8 +121,10 @@ report.bubbleFont = await evaluate(`(() => {
   return b ? getComputedStyle(b).fontSize : null;
 })()`);
 
-// ---------- 記憶庫面板的開關與說明 ----------
-await clickByText('记忆', 'header button');
+// ---------- 記憶庫面板的開關與說明（入口收在 ⋮ 菜單裡） ----------
+await clickByTestId('play-menu');
+await sleep(300);
+await clickByText('记忆');
 await sleep(500);
 report.memorySheet = await evaluate(`(() => {
   const toggle = document.querySelector('[data-testid="memory-toggle"]');
@@ -130,7 +132,7 @@ report.memorySheet = await evaluate(`(() => {
   return {
     hasToggle: Boolean(toggle),
     pressed: toggle ? toggle.getAttribute('aria-pressed') : null,
-    explains: text.includes('永久记忆') && text.includes('回注') && text.includes('关掉后'),
+    explains: text.includes('记忆库') && text.includes('按对') && text.includes('回注') && text.includes('关掉后'),
   };
 })()`);
 await shot('ui-memory-sheet');
@@ -196,7 +198,9 @@ report.afterScrollUp = await evaluate(`(() => {
   const el = document.querySelector('[data-testid="message-scroll"]');
   return {
     scrollTop: Math.round(el.scrollTop),
-    backButton: Boolean(document.querySelector('[data-testid="scroll-to-bottom"]')),
+    // 往上滚 → 显示向上的「回到顶部」
+    topButton: Boolean(document.querySelector('[data-testid="scroll-to-top"]')),
+    bottomButton: Boolean(document.querySelector('[data-testid="scroll-to-bottom"]')),
   };
 })()`);
 await shot('ui-scroll-lock');
@@ -207,11 +211,26 @@ await clickByText('发送');
 await sleep(1200);
 report.duringStreamScroll = await evaluate(`(() => {
   const el = document.querySelector('[data-testid="message-scroll"]');
-  return { scrollTop: Math.round(el.scrollTop), backButton: Boolean(document.querySelector('[data-testid="scroll-to-bottom"]')) };
+  return { scrollTop: Math.round(el.scrollTop), topButton: Boolean(document.querySelector('[data-testid="scroll-to-top"]')) };
 })()`);
 await sleep(2500);
 
-// 按「回到底部」要回到最底
+// 按「回到顶部」要回到最上面；再往下滚会出现「回到底部」，按了回到最底
+report.backToTop = await evaluate(`(() => {
+  const btn = document.querySelector('[data-testid="scroll-to-top"]');
+  if (!btn) return { clicked: false };
+  btn.click();
+  const el = document.querySelector('[data-testid="message-scroll"]');
+  return { clicked: true, atTop: el.scrollTop <= 2 };
+})()`);
+await sleep(300);
+await evaluate(`(() => {
+  const el = document.querySelector('[data-testid="message-scroll"]');
+  el.scrollTop = Math.min(600, el.scrollHeight - el.clientHeight);
+  el.dispatchEvent(new Event('scroll', { bubbles: true }));
+  return el.scrollTop;
+})()`);
+await sleep(300);
 report.backToBottom = await evaluate(`(() => {
   const btn = document.querySelector('[data-testid="scroll-to-bottom"]');
   if (!btn) return { clicked: false };
@@ -239,9 +258,10 @@ report.pass =
   report.afterDone.hasMemoryBlock &&
   report.afterDone.nestedButtons === 0 &&
   report.scrollable.canScroll &&
-  report.afterScrollUp.backButton &&
-  report.duringStreamScroll.backButton &&
-  report.backToBottom.atBottom &&
+  report.afterScrollUp.topButton && !report.afterScrollUp.bottomButton &&
+  report.duringStreamScroll.topButton &&
+  report.backToTop.clicked && report.backToTop.atTop &&
+  report.backToBottom.clicked && report.backToBottom.atBottom &&
   logs.length === 0;
 
 console.log(JSON.stringify(report, null, 1));

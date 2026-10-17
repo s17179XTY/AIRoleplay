@@ -21,7 +21,7 @@ beforeEach(async () => {
   await switchDatabase(DEFAULT_DB_NAME);
   __resetSyncMemoryForTest();
   useSync.setState({
-    username: null, status: 'signed-out', pending: 0, conflicts: 0, quota: null, lastSyncAt: null, message: null,
+    username: null, status: 'signed-out', unlocked: false, pending: 0, conflicts: 0, quota: null, lastSyncAt: null, message: null,
   });
 });
 
@@ -121,6 +121,44 @@ describe('AccountSection', () => {
     fireEvent.change(screen.getByPlaceholderText('输入密码解锁'), { target: { value: 'pw-123456' } });
     fireEvent.click(screen.getByText('解锁'));
     await waitFor(() => expect(screen.getByText('立即同步')).toBeTruthy());
+  });
+
+  it('解锁时密码错误：留在解锁画面，不显示已登录面板（回归：密码错也像登入成功）', async () => {
+    // 模拟「重新打开页面」：token 与账号名还在，但 DEK 只在内存里（已经没了）
+    saveTokens({ accessToken: 'stale-access', refreshToken: 'stale-refresh' });
+    saveUsername('someone');
+    saveKdf('someone', TEST_KDF);
+    useSync.setState({ username: 'someone', status: 'locked', unlocked: false });
+
+    renderSection();
+    await waitFor(() => expect(screen.getByPlaceholderText('输入密码解锁')).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText('输入密码解锁'), { target: { value: 'wrong-pass' } });
+    fireEvent.click(screen.getByText('解锁'));
+
+    await waitFor(() => expect(screen.getByText(/帳號名或密碼錯誤/)).toBeTruthy());
+    // 仍然停在「解锁」画面，没有出现账号面板的任何东西
+    expect(screen.getByPlaceholderText('输入密码解锁')).toBeTruthy();
+    expect(screen.queryByText('立即同步')).toBeNull();
+    expect(screen.queryByText('退出登录')).toBeNull();
+    expect(screen.queryByText(/云端空间/)).toBeNull();
+    expect(useSync.getState().unlocked).toBe(false);
+  });
+
+  it('解锁成功后才显示「立即同步」', async () => {
+    await useSync.getState().register({ username: 'alice', inviteCode: INVITE, password: 'pw-123456', ...seams, fetchImpl: server });
+    // 模拟重新载入页面：DEK 从内存里消失
+    __resetSyncMemoryForTest();
+    useSync.setState({ username: 'alice', status: 'locked', unlocked: false });
+
+    renderSection();
+    await waitFor(() => expect(screen.getByPlaceholderText('输入密码解锁')).toBeTruthy());
+    expect(screen.queryByText('立即同步')).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText('输入密码解锁'), { target: { value: 'pw-123456' } });
+    fireEvent.click(screen.getByText('解锁'));
+
+    await waitFor(() => expect(screen.getByText('立即同步')).toBeTruthy());
+    expect(useSync.getState().unlocked).toBe(true);
   });
 
   it('装置管理：展开后列出装置，可踢掉其他装置', async () => {

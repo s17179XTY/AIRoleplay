@@ -49,6 +49,29 @@ export function buildExchanges(messages: WindowMessage[]): Exchange[] {
   return out;
 }
 
+/**
+ * 已经压成摘要的消息（连续的旧消息前缀）到哪一条为止。
+ *
+ * 为什么需要它：摘要生成后，那批原文**不能再进提示词** —— 否则「原文 + 摘要」同时注入，
+ * 上下文只会越压越大（使用者实测投诉过）。窗口计算因此必须以「最后一条被覆盖的消息」为起点。
+ *
+ * - 没有摘要 → -1
+ * - 摘要的 toMessageId 不在当前世界线（换分支/删消息）→ -1：宁可重复也不丢内容
+ */
+export function coveredEndIndex(
+  messages: { id: string }[],
+  summaries: { toMessageId?: string }[],
+): number {
+  const indexOf = new Map(messages.map((m, i) => [m.id, i]));
+  let end = -1;
+  for (const s of summaries) {
+    if (!s.toMessageId) continue;
+    const idx = indexOf.get(s.toMessageId);
+    if (idx !== undefined && idx > end) end = idx;
+  }
+  return end;
+}
+
 export function computeWindow(input: {
   messages: WindowMessage[];
   mode: 'recent' | 'all';

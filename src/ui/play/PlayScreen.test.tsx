@@ -5,6 +5,7 @@ import { db } from '../../core/storage/db';
 import { createMockAdapter, mockReplyFor } from '../../core/providers/mock';
 import { setAdapter, useSession } from '../../state/useSession';
 import type { ProviderAdapter, StreamEvent } from '../../core/providers/types';
+import { useComposer } from '../../state/useComposer';
 
 function abortError(): Error {
   return Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -38,6 +39,7 @@ beforeEach(async () => {
     ready: false, cardName: '', chatId: null, messages: [], draft: '', streaming: false, error: null,
   });
   setAdapter(createMockAdapter(mockReplyFor('测试', '演示卡'), { chunkSize: 500, delayMs: 0 }));
+  useComposer.setState({ texts: {} });
 });
 
 afterEach(async () => {
@@ -142,7 +144,7 @@ describe('游玩页', () => {
     expect(screen.getByTestId('play-menu-panel').textContent).toContain('记忆');
   });
 
-  it('往上滑之后出现的是「回到顶部 / 回到底部」两个图标按钮（不是文字）', async () => {
+  it('滚动浮钮：往下滚显示「回到底部」、往上滚换成「回到顶部」，到顶/到底淡出', async () => {
     render(<PlayScreen />);
     await waitFor(() => expect(useSession.getState().ready).toBe(true));
     const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
@@ -155,13 +157,57 @@ describe('游玩页', () => {
     const el = screen.getByTestId('message-scroll');
     Object.defineProperty(el, 'scrollHeight', { value: 2000, configurable: true });
     Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true });
+
+    // 一开始在最上面：不显示
     el.scrollTop = 0;
     fireEvent.scroll(el);
+    expect(screen.queryByTestId('scroll-to-bottom')).toBeNull();
+    expect(screen.queryByTestId('scroll-to-top')).toBeNull();
 
-    await waitFor(() => expect(screen.getByTestId('scroll-to-top')).toBeTruthy());
-    expect(screen.getByTestId('scroll-to-bottom')).toBeTruthy();
+    // 往下滚（0 → 500）：显示「回到底部」
+    el.scrollTop = 500;
+    fireEvent.scroll(el);
+    await waitFor(() => expect(screen.getByTestId('scroll-to-bottom')).toBeTruthy());
     // 图标按钮里没有文字（使用者要求：不要弄成文字）
     expect(screen.getByTestId('scroll-to-bottom').textContent).toBe('');
+
+    // 往上滚（500 → 100）：换成「回到顶部」
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    await waitFor(() => expect(screen.getByTestId('scroll-to-top')).toBeTruthy());
+    expect(screen.queryByTestId('scroll-to-bottom')).toBeNull();
+
+    // 回到最底部：淡出
+    el.scrollTop = 1600;
+    fireEvent.scroll(el);
+    await waitFor(() => expect(screen.queryByTestId('scroll-to-top')).toBeNull());
+  });
+
+  it('右上角 + 按钮新开一个对话', async () => {
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧');
+    fireEvent.change(box, { target: { value: '你好' } });
+    fireEvent.click(screen.getByText('发送'));
+    await waitFor(() => expect(useSession.getState().messages.length).toBe(2));
+    await waitFor(() => expect(useSession.getState().streaming).toBe(false));
+    const before = useSession.getState().chatId;
+
+    fireEvent.click(screen.getByTestId('play-new-chat'));
+    await waitFor(() => expect(useSession.getState().chatId).not.toBe(before));
+    await waitFor(() => expect(useSession.getState().messages.length).toBe(0));
+  });
+
+  it('输入框草稿：切到别的页面（组件卸载）再回来还在', async () => {
+    const first = render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    fireEvent.change(screen.getByPlaceholderText('开始你的第一次 AI 聊天吧'), { target: { value: '打到一半的话' } });
+    first.unmount();
+
+    render(<PlayScreen />);
+    await waitFor(() => expect(useSession.getState().ready).toBe(true));
+    const box = screen.getByPlaceholderText('开始你的第一次 AI 聊天吧') as HTMLTextAreaElement;
+    await waitFor(() => expect(box.value).toBe('打到一半的话'));
   });
 
   it('对话列表用右侧图标按钮：改名与删除都不再占一行', async () => {

@@ -4,6 +4,9 @@ import { SUMMARY_KEEP, SUMMARY_MERGE_BATCH, SUMMARY_MAX_CHARS } from './types';
 import type { MemoryItem, SummaryItem } from '../assembler/types';
 import type { ExtractedMemory } from '../render/extract';
 
+/** 本地合并后的条目的字数上限：合并是「唯一的历史载体」，宁长勿丢，不能按单对的 200 字截断 */
+const MERGED_MAX_CHARS = SUMMARY_MAX_CHARS * SUMMARY_MERGE_BATCH;
+
 /** 会话里所有记忆条目（含迁移前的旧数据），按 order 升序 */
 export async function listMemories(chatId: string): Promise<MemoryRecord[]> {
   const all = await db.memories.where('chatId').equals(chatId).toArray();
@@ -41,10 +44,12 @@ export interface AddSummaryInput {
   rangeLabel?: string;
   origin: MemoryOrigin;
   order?: number;
+  /** 这一条的文本上限：攒够 N 对合成一条时要按 N 放大（默认按单对 200 字） */
+  maxChars?: number;
 }
 
-function clip(text: string): string {
-  return text.length > SUMMARY_MAX_CHARS ? text.slice(0, SUMMARY_MAX_CHARS) + '…' : text;
+function clip(text: string, maxChars: number = SUMMARY_MAX_CHARS): string {
+  return text.length > maxChars ? text.slice(0, maxChars) + '…' : text;
 }
 
 export async function addSummary(input: AddSummaryInput): Promise<MemoryRecord> {
@@ -54,9 +59,9 @@ export async function addSummary(input: AddSummaryInput): Promise<MemoryRecord> 
     id: newId('sum_'),
     chatId: input.chatId,
     tier: 'summary',
-    text: clip(input.text),
-    userText: input.userText ? clip(input.userText) : undefined,
-    assistantText: input.assistantText ? clip(input.assistantText) : undefined,
+    text: clip(input.text, input.maxChars),
+    userText: input.userText ? clip(input.userText, input.maxChars) : undefined,
+    assistantText: input.assistantText ? clip(input.assistantText, input.maxChars) : undefined,
     dateLabel: input.dateLabel,
     order,
     sourceMessageId: input.toMessageId ?? null,
@@ -81,11 +86,12 @@ export async function updateSummaryText(
 ): Promise<void> {
   const row = await db.memories.get(id);
   if (!row) return;
+  // 手动编辑以使用者写的为准，但给一个整体保险（合并条目的上限，而不是单对的 200 字）
   await db.memories.put({
     ...row,
-    text: clip(text),
-    userText: userText === undefined ? row.userText : clip(userText),
-    assistantText: assistantText === undefined ? row.assistantText : clip(assistantText),
+    text: clip(text, MERGED_MAX_CHARS),
+    userText: userText === undefined ? row.userText : clip(userText, MERGED_MAX_CHARS),
+    assistantText: assistantText === undefined ? row.assistantText : clip(assistantText, MERGED_MAX_CHARS),
   });
 }
 
@@ -125,6 +131,7 @@ export async function trimSummaries(chatId: string): Promise<{ merged: number }>
     messageCount: head.reduce((s, r) => s + (r.messageCount ?? 0), 0),
     origin: 'merged',
     order: head[0].order,
+    maxChars: MERGED_MAX_CHARS,
   });
 
   for (const row of head) await db.memories.delete(row.id);

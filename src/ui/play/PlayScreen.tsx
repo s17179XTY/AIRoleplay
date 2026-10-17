@@ -7,6 +7,7 @@ import { updateSummaryText } from '../../core/storage/memoryStore';
 import { listMods, setModEnabled } from '../../core/storage/modRepo';
 import type { ModRecord } from '../../core/storage/types';
 import { useBlobUrl } from '../cards/useAssetUrl';
+import { resolveCardImages } from '../cards/cardAssets';
 import { db } from '../../core/storage/db';
 import type { ChatRecord } from '../../core/storage/types';
 import MessageBubble from './MessageBubble';
@@ -19,7 +20,7 @@ function formatTokens(n: number): string {
 
 function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className="block w-full px-4 py-2.5 text-left text-slate-700 active:bg-black/5">
+    <button type="button" onClick={onClick} className="block w-full whitespace-nowrap px-3.5 py-2.5 text-left text-slate-700 active:bg-black/5">
       {label}
     </button>
   );
@@ -77,16 +78,17 @@ export default function PlayScreen() {
   const [editingChat, setEditingChat] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState('');
   const [follow, setFollow] = useState(true);
+  /** 浮動鈕的方向：往上滾顯示「回到顶部」、往下滾顯示「回到底部」 */
+  const [scrollHint, setScrollHint] = useState<'top' | 'bottom' | null>(null);
+  const lastScrollTop = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const card = useSession((s) => s.card);
   const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
   const avatarText = cardName ? Array.from(cardName)[0] : 'AI';
-  // 卡片自带的头像（聊天时显示在气泡旁边）；没有就退回「首字」
-  const avatarAsset = card && card.json.avatar
-    ? card.assets.find((a) => a.path === card.json.avatar)
-    : undefined;
-  const avatarUrl = useBlobUrl(avatarAsset?.bytes, avatarAsset?.mime);
+  // 卡片自带的头像（聊天气泡旁边）；没有头像就用封面，两样都没有才退回「首字」
+  const cardImages = resolveCardImages(card);
+  const avatarUrl = useBlobUrl(cardImages.avatar?.bytes, cardImages.avatar?.mime);
   const hasMessages = messages.length > 0 || draft.length > 0;
   // 卡片打开时互动页占满聊天框；发出第一条消息后自动收起
   const showPage = Boolean(cardUiHtml) && (!hasMessages || pageOpen);
@@ -110,21 +112,35 @@ export default function PlayScreen() {
   }, [refreshContext, messages.length, draft, memories.length, chatId, dataVersion]);
 
   /**
-   * 自動滾動：只有在「使用者還在底部」時才跟。
-   * 以前是無條件 scrollIntoView，AI 一直吐字就一直把畫面往下拉，根本來不及讀
-   * ——所以現在使用者一往上滑就停止跟隨，並出現「回到底部」。
+   * 自動滾動 + 單一顆「回頂/回底」浮動鈕。
+   * - 只有使用者在底部時才自動跟隨（AI 吐字不會把畫面一直往下拉）
+   * - 往上滾 → 向上三角形「回到顶部」；往下滾 → 三角形轉成向下「回到底部」
+   * - 到頂 / 到底就淡出，不擋內容；按鈕有陰影與漸變動畫
    */
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    setFollow(el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD;
+    const atTop = el.scrollTop <= 8;
+    setFollow(atBottom);
+    const prev = lastScrollTop.current;
+    lastScrollTop.current = el.scrollTop;
+    if (el.scrollTop < prev - 2) {
+      setScrollHint(atTop ? null : 'top');
+    } else if (el.scrollTop > prev + 2) {
+      setScrollHint(atBottom ? null : 'bottom');
+    } else if (atTop || atBottom) {
+      setScrollHint(null);
+    }
   }, []);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
     setFollow(true);
+    setScrollHint(null);
   }, []);
 
   /** 回到最上面（找更早的内容时用） */
@@ -132,7 +148,9 @@ export default function PlayScreen() {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = 0;
+    lastScrollTop.current = 0;
     setFollow(false);
+    setScrollHint(null);
   }, []);
 
   useEffect(() => {
@@ -177,31 +195,49 @@ export default function PlayScreen() {
               <span className="truncate">{modelLabel}</span>
             </div>
           </div>
-          {/* 四个入口收成一个菜单（使用者要求：按下才显示） */}
-          <div className="relative shrink-0">
+          {/* 右上角：+ 新对话、⋮ 菜单。图标不要边框、菜单宽度跟着文字走（使用者要求） */}
+          <div className="flex shrink-0 items-center gap-0.5">
             <button
               type="button"
-              data-testid="play-menu"
-              aria-label="更多"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((v) => !v)}
-              className="dsh-chip h-9 w-9 justify-center p-0 text-[16px] leading-none"
+              data-testid="play-new-chat"
+              aria-label="新对话"
+              disabled={streaming || summarizing}
+              onClick={() => { setPageOpen(false); setMenuOpen(false); void newChat(); }}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-500 active:bg-black/5 disabled:opacity-40"
             >
-              ⋮
+              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
             </button>
-            {menuOpen && (
-              <div
-                className="dsh-float absolute right-0 top-11 z-30 w-44 overflow-hidden rounded-2xl bg-white py-1 text-[13px] shadow-lg"
-                data-testid="play-menu-panel"
+            <div className="relative">
+              <button
+                type="button"
+                data-testid="play-menu"
+                aria-label="更多"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((v) => !v)}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-slate-500 active:bg-black/5"
               >
-                {cardUiHtml && hasMessages && !pageOpen && (
-                  <MenuItem label="互动页" onClick={() => { setPageOpen(true); setMenuOpen(false); }} />
-                )}
-                <MenuItem label="对话" onClick={() => void openSheet('chats')} />
-                <MenuItem label={`MOD${modsOn > 0 ? ' · ' + modsOn + ' 开' : ''}`} onClick={() => void openSheet('mods')} />
-                <MenuItem label={`记忆${memories.length > 0 ? ' · ' + memories.length : ''}`} onClick={() => void openSheet('memory')} />
-              </div>
-            )}
+                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                  <circle cx="9" cy="3.5" r="1.5" fill="currentColor" />
+                  <circle cx="9" cy="9" r="1.5" fill="currentColor" />
+                  <circle cx="9" cy="14.5" r="1.5" fill="currentColor" />
+                </svg>
+              </button>
+              {menuOpen && (
+                <div
+                  className="dsh-float absolute right-0 top-10 z-30 w-max min-w-[6.5rem] overflow-hidden rounded-2xl bg-white py-1 text-[13px] shadow-lg"
+                  data-testid="play-menu-panel"
+                >
+                  {cardUiHtml && hasMessages && !pageOpen && (
+                    <MenuItem label="互动页" onClick={() => { setPageOpen(true); setMenuOpen(false); }} />
+                  )}
+                  <MenuItem label="对话" onClick={() => void openSheet('chats')} />
+                  <MenuItem label={`MOD${modsOn > 0 ? ' · ' + modsOn + ' 开' : ''}`} onClick={() => void openSheet('mods')} />
+                  <MenuItem label={`记忆${memories.length > 0 ? ' · ' + memories.length : ''}`} onClick={() => void openSheet('memory')} />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
@@ -266,48 +302,45 @@ export default function PlayScreen() {
               <div className="h-2" />
             </div>
 
-            {/* 两个圆形图标按钮，固定在聊天区右下角（使用者要求：不要文字、不要放中间） */}
-            <div className="absolute bottom-3 right-3 z-10 flex flex-col gap-2">
-              {/*
-                回到顶部：只有在往下滚过一段之后才有意义。
-                follow === false 就代表使用者已经离开底部，这时两个都给。
-              */}
-              {!follow && (
-                <button
-                  type="button"
-                  aria-label="回到顶部"
-                  data-testid="scroll-to-top"
-                  onClick={scrollToTop}
-                  className="dsh-float flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(20,24,33,0.82)] text-white backdrop-blur"
+            {/*
+              单颗浮动圆钮（参考风月）：往上滚显示向上三角「回到顶部」，往下滚三角向左转成向下「回到底部」。
+              有阴影、渐入渐出；到顶 / 到底时淡出。图标按钮里永远没有文字。
+            */}
+            <div className="pointer-events-none absolute bottom-3 right-3 z-10">
+              <button
+                type="button"
+                aria-label={scrollHint === 'bottom' ? '回到底部' : '回到顶部'}
+                data-testid={scrollHint === 'top' ? 'scroll-to-top' : scrollHint === 'bottom' ? 'scroll-to-bottom' : 'scroll-button'}
+                onClick={scrollHint === 'bottom' ? scrollToBottom : scrollToTop}
+                aria-hidden={scrollHint === null}
+                className={
+                  'pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full bg-white text-slate-600 ' +
+                  'shadow-[0_8px_24px_rgba(16,24,40,0.18)] transition-all duration-300 ease-out ' +
+                  (scrollHint
+                    ? 'translate-y-0 scale-100 opacity-100'
+                    : 'pointer-events-none translate-y-2 scale-90 opacity-0')
+                }
+              >
+                <svg
+                  width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"
+                  className={'transition-transform duration-300 ease-out ' + (scrollHint === 'bottom' ? '-rotate-180' : 'rotate-0')}
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M8 3 L14 11 L2 11 Z" fill="currentColor" />
-                  </svg>
-                </button>
-              )}
-              {!follow && (
-                <button
-                  type="button"
-                  aria-label="回到底部"
-                  data-testid="scroll-to-bottom"
-                  onClick={scrollToBottom}
-                  className="dsh-float flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(20,24,33,0.82)] text-white backdrop-blur"
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-                    <path d="M8 13 L2 5 L14 5 Z" fill="currentColor" />
-                  </svg>
-                </button>
-              )}
+                  <path d="M8 3 L14 12 L2 12 Z" fill="currentColor" />
+                </svg>
+              </button>
             </div>
           </>
         )}
       </main>
 
       <Composer
+        draftKey={chatId ?? 'default'}
         disabled={!ready}
         streaming={streaming}
         summarizing={summarizing}
-        contextPercent={info && info.budget > 0 ? Math.round((info.totalTokens / info.budget) * 100) : 0}
+        contextPercent={info && info.budget > 0 && info.totalTokens > 0
+          ? Math.max(1, Math.round((info.totalTokens / info.budget) * 100))
+          : 0}
         restoreText={restoreInput}
         onConsumeRestore={consumeRestoreInput}
         onSend={(t) => void send(t)}
@@ -340,7 +373,9 @@ export default function PlayScreen() {
                   <span className="text-slate-700">合计</span>
                   <span className="text-slate-700">
                     {formatTokens(info.totalTokens)} / {formatTokens(info.budget)} tok
-                    （{info.budget > 0 ? Math.round((info.totalTokens / info.budget) * 100) : 0}%）
+                    （{info.budget > 0 && info.totalTokens > 0
+                      ? Math.max(1, Math.round((info.totalTokens / info.budget) * 100))
+                      : 0}%）
                   </span>
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10">
@@ -517,7 +552,7 @@ export default function PlayScreen() {
                       <span className="text-[#0072e3]">
                         {m.dateLabel}
                         {m.rangeLabel ? ` · ${m.rangeLabel}` : ''}
-                        {m.origin === 'merged' ? ' · 合并' : m.origin === 'local-skeleton' ? ' · 骨架（模型失败）' : ''}
+                        {m.origin === 'merged' ? ' · 合并' : m.origin === 'local-skeleton' ? ' · 骨架（模型失败）' : m.origin === 'verbatim' ? ' · 原文保留（已是最短）' : ''}
                       </span>
                       <span className="flex gap-3">
                         <button

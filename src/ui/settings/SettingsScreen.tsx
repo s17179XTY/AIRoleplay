@@ -493,7 +493,8 @@ export default function SettingsScreen() {
               </div>
               <div className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
                 「只带最近 N 条」省钱，但更早的内容要靠下面的摘要记住；
-                「全部带」记得最全，但每一轮都要把整段对话送出去，越聊越贵。
+                「全部带」记得最全（窗口内全部都带，受上下文预算裁剪与自动摘要保护），
+                但每一轮都要送更多内容，越聊越贵。
               </div>
             </div>
             {contextMode === 'recent' && (
@@ -556,10 +557,12 @@ export default function SettingsScreen() {
                       达到阈值就从最老的对话开始压，压到大约 {SUMMARY_TARGET_PERCENT}% 就停手；
                       一次最多 {SUMMARY_MAX_PAIRS_PER_RUN} 对，不够下一轮继续。
                       「只带最近 N 条」模式另有规则：掉出窗口的对话一定会被压（否则直接丢失）。
+                      已经压成摘要的原文不会再送进提示词（避免原文与摘要双份、越压越大）；
+                      摘要如果并不比原文短，会直接保留原文，绝不「越压越长」。
                     </div>
                   </label>
                   <label className="mt-2 block">
-                    <div className="mb-1 text-[11px] text-slate-500">攒够几对再压缩（1 = 一掉出就压，调大更省钱）</div>
+                    <div className="mb-1 text-[11px] text-slate-500">攒够几对再压缩（N 对**合成 1 条**摘要；1 = 一掉出就压，调大更省钱）</div>
                     <input
                       type="text"
                       inputMode="numeric"
@@ -574,14 +577,14 @@ export default function SettingsScreen() {
               )}
             </div>
             <label className="block">
+              <div className="mb-1 text-[12px] text-slate-500">全局前置词（排在全局提示词之前）</div>
+              <textarea aria-label="全局前置词" className={inputClass} rows={3} value={globalConfig.prePrompt}
+                onChange={(e) => setGlobalConfig({ ...globalConfig, prePrompt: e.target.value })} />
+            </label>
+            <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">全局提示词</div>
               <textarea aria-label="全局提示词" className={inputClass} rows={4} value={globalConfig.prompt}
                 onChange={(e) => setGlobalConfig({ ...globalConfig, prompt: e.target.value })} />
-            </label>
-            <label className="block">
-              <div className="mb-1 text-[12px] text-slate-500">全局前缀词（排在全局提示词之后）</div>
-              <textarea aria-label="全局前置词" className={inputClass} rows={3} value={globalConfig.prePrompt}
-                onChange={(e) => setGlobalConfig({ ...globalConfig, prePrompt: e.target.value })} />
             </label>
             <label className="block">
               <div className="mb-1 text-[12px] text-slate-500">后置词</div>

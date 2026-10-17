@@ -61,6 +61,35 @@ describe('摘要库', () => {
     expect(list.some((s) => s.userText === '用户1')).toBe(false);
   });
 
+  it('addSummary 的 maxChars：攒够 N 对合成一条时按 N 放大上限', async () => {
+    const long = '甲'.repeat(700);
+    const row = await addSummary({
+      chatId: 'c1', text: long, userText: long, assistantText: long,
+      dateLabel: '10-01', origin: 'model', maxChars: 600,
+    });
+    expect(row.text.length).toBe(601); // 600 + 省略号
+    expect(row.userText!.length).toBe(601);
+  });
+
+  it('合并摘要不能被单对的 200 字截断（它是唯一的历史载体）', async () => {
+    for (let i = 1; i <= SUMMARY_KEEP + 1; i += 1) {
+      await addSummary({
+        chatId: 'c1',
+        userText: '用户' + i + '：' + '甲'.repeat(30),
+        assistantText: '叙事' + i + '：' + '乙'.repeat(30),
+        text: '[用户] ' + '甲'.repeat(30) + '\n[叙事] ' + '乙'.repeat(30),
+        dateLabel: '10-' + String(i).padStart(2, '0'),
+        origin: 'model',
+      });
+    }
+    await trimSummaries('c1');
+    const merged = (await listSummaries('c1'))[0];
+    expect(merged.origin).toBe('merged');
+    expect(merged.text.length).toBeGreaterThan(200);
+    expect(merged.userText).toContain('用户1');
+    expect(merged.userText).toContain('用户' + SUMMARY_MERGE_BATCH);
+  });
+
   it('可以手动改与删（AI 压歪了还能救）', async () => {
     const row = await add(1);
     await updateSummaryText(row.id, '[用户] 改过的用户段\n[叙事] 改过的叙事段', '改过的用户段', '改过的叙事段');

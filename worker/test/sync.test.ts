@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { makeTestEnv } from './helpers/env';
 import { MIGRATION_SQL } from './helpers/migration';
 import { handlePull, handlePush, MAX_PUSH_BATCH, MAX_ROW_BYTES } from '../src/sync';
-import type { Env } from '../src/types';
+import type { D1Database, D1PreparedStatement, Env } from '../src/types';
 
 const USER = 'u_1';
 
@@ -18,6 +18,37 @@ async function seedUser(env: Env, id = USER, username = 'alice', quota = 1000) {
   )
     .bind(id, username, '{}', 'h', 's', 'w', 'rw', 'rh', 'rs', quota, 1)
     .run();
+}
+
+/**
+ * 包一層 D1，模擬 Cloudflare 的硬限制：單一 prepared statement 最多 100 個綁定參數。
+ * node:sqlite 的變數上限是 32766，真 SQL 替身自己不會抱怨，所以只有這層守門員抓得到
+ * 「chunk 尺寸算錯 → 參數爆表」的 bug。順便記錄實際送出的最大參數數。
+ */
+function withD1ParamLimit(db: D1Database, max = 100) {
+  let maxBound = 0;
+  let prepared = 0;
+  const wrap = (stmt: D1PreparedStatement): D1PreparedStatement => ({
+    bind(...values: unknown[]) {
+      maxBound = Math.max(maxBound, values.length);
+      if (values.length > max) {
+        throw new Error(`D1_ERROR: too many SQL variables: ${values.length} > ${max}`);
+      }
+      return wrap(stmt.bind(...values));
+    },
+    first: <T = unknown>(colName?: string) => stmt.first<T>(colName),
+    all: <T = unknown>() => stmt.all<T>(),
+    run: () => stmt.run(),
+  });
+  const guarded: D1Database = {
+    prepare(query: string) {
+      prepared++;
+      return wrap(db.prepare(query));
+    },
+    batch: (statements: D1PreparedStatement[]) => db.batch(statements),
+    exec: (query: string) => db.exec(query),
+  };
+  return { db: guarded, stats: () => ({ maxBound, prepared }) };
 }
 
 describe('sync push/pull', () => {
@@ -87,6 +118,36 @@ describe('sync push/pull', () => {
     expect(page.body.records as unknown[]).toHaveLength(2);
     expect(page.body.hasMore).toBe(true);
     expect(page.body.cursor).toBe(2);
+  });
+
+  it('一次 pull 超過 50 筆 live changes 時，每條語句的綁定參數都 ≤ 100（真 D1 硬上限）', async () => {
+    // 60 筆：>50，舊寫法 PAIR_CHUNK=50 的第一批就是 1 個 userId + 50*2 = 101 個參數，
+    // 真實 D1 會直接報錯，worker 外層 catch 回 500，客戶端第一次同步永遠失敗。
+    const total = 60;
+    for (let i = 0; i < total; i += MAX_PUSH_BATCH) {
+      const batch = Array.from(
+        { length: Math.min(MAX_PUSH_BATCH, total - i) },
+        (_, j) => rec({ id: `chat_${i + j}` }),
+      );
+      expect((await handlePush(env, USER, { records: batch })).status).toBe(200);
+    }
+
+    const guard = withD1ParamLimit(env.DB);
+    const res = await handlePull({ ...env, DB: guard.db }, USER, 0);
+
+    expect(res.status).toBe(200);
+    const rows = res.body.records as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(total);
+    expect(rows.every((r) => r.deleted === false)).toBe(true);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(total);
+    expect(guard.stats().maxBound).toBeLessThanOrEqual(100);
+  });
+
+  it('守門員本身有效：101 個綁定參數會立刻丟錯（否則上一條會假綠）', () => {
+    const guard = withD1ParamLimit(env.DB);
+    expect(() =>
+      guard.db.prepare('SELECT 1').bind(...Array.from({ length: 101 }, () => 1)),
+    ).toThrow(/too many SQL variables/);
   });
 
   it('別的帳號的資料不會出現在我的 pull 裡', async () => {

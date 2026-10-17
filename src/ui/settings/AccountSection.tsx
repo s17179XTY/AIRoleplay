@@ -17,7 +17,8 @@ function formatTime(value: number | null): string {
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 /**
@@ -28,6 +29,7 @@ function formatBytes(n: number): string {
 export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
   const username = useSync((s) => s.username);
   const status = useSync((s) => s.status);
+  const unlocked = useSync((s) => s.unlocked);
   const pending = useSync((s) => s.pending);
   const quota = useSync((s) => s.quota);
   const lastSyncAt = useSync((s) => s.lastSyncAt);
@@ -227,10 +229,17 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
     );
   }
 
-  if (username && status !== 'signed-out' && status !== 'locked') {
+  /*
+   * 已登入面板只認 unlocked（本次打開頁面後成功解出 DEK），不能只看 username：
+   * 密碼打錯時 username 與 token 都還在，光看 username 就會出現「密碼錯也登入成功」的假象。
+   * status === 'error' 時只要 unlocked 也照樣顯示面板 —— 那才是真正的同步錯誤。
+   */
+  if (username && unlocked) {
     const used = quota?.used ?? 0;
-    const limit = quota?.limit ?? 1;
-    const percent = Math.min(100, Math.round((used / Math.max(1, limit)) * 100));
+    const limit = quota?.limit ?? 0;
+    // quota 還沒拉回來時不要顯示「0 B / 1 B」那種假數字
+    const usageText = limit > 0 ? `${formatBytes(used)} / ${formatBytes(limit)}` : '—';
+    const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
     return (
       <>
         <section>
@@ -251,7 +260,7 @@ export default function AccountSection({ seams = {} }: { seams?: SyncSeams }) {
             <div>
               <div className="mb-1 flex items-center justify-between text-[11px] text-slate-400">
                 <span>云端空间</span>
-                <span>{formatBytes(used)} / {formatBytes(limit)}</span>
+                <span>{usageText}</span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10">
                 <div className="h-full rounded-full bg-[#0072E3]" style={{ width: `${percent}%` }} />

@@ -63,6 +63,19 @@ describe('摘要压缩', () => {
     expect(p).toContain('第 2 段');
   });
 
+  it('maxChars：攒够多对合成一条时按对数放大字数上限，解析时也不按 200 截断', async () => {
+    const prompt = buildSummaryPrompt([[{ role: 'user', content: 'x' }]], undefined, 400);
+    expect(prompt).toContain('不超过 400 字');
+
+    const long = '甲'.repeat(350);
+    const out = await summarizePairs({
+      adapter: fakeAdapter(['用户：' + long + '\n叙事：' + long]), cfg, model: 'm',
+      pairs: [[{ role: 'user', content: 'x' }]], maxChars: 400,
+    });
+    expect(out[0].userText.length).toBe(350);
+    expect(out[0].assistantText.length).toBe(350);
+  });
+
   it('parseSummarySections 按 ### n 拆成每对一段', () => {
     const raw = [
       '### 1', '用户：甲选 A', '叙事：灯灭了。',

@@ -3,7 +3,7 @@ import { waitFor } from '@testing-library/react';
 import { db, DEFAULT_DB_NAME, switchDatabase } from '../core/storage/db';
 import { createMockAdapter } from '../core/providers/mock';
 import { setAdapter, useSession } from './useSession';
-import { listSummaries } from '../core/storage/memoryStore';
+import { addSummary, listSummaries } from '../core/storage/memoryStore';
 import { SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE } from '../core/storage/types';
 import type { ProviderAdapter, StreamEvent } from '../core/providers/types';
 
@@ -313,4 +313,105 @@ describe('会话 store', () => {
     expect(p.rows.some((r) => r.label.startsWith('历史'))).toBe(true);
     expect(p.rows.some((r) => r.label === '系统提示词')).toBe(true);
   });
+
+describe('摘要压缩（第二轮修正：不重复压、不膨胀、攒够成一条）', () => {
+  /** 捕获模型收到的提示词；主回复与摘要请求分开记录 */
+  function captureAdapter(opts: { summaryText?: string; summaryAlwaysLong?: boolean } = {}) {
+    const main: string[][] = [];
+    setAdapter({
+      id: 'mock',
+      async listModels() { return []; },
+      async *streamChat(_cfg, req) {
+        const texts = req.messages.map((m) => m.content);
+        const isSummary = texts.some((t) => t.includes('要压缩的对话'));
+        if (!isSummary) main.push(texts);
+        const delta = isSummary
+          ? (opts.summaryAlwaysLong ? '长'.repeat(500) : (opts.summaryText ?? '用户：短\n叙事：短'))
+          : '<plot>回复</plot>';
+        yield { type: 'text', delta };
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    });
+    return { main };
+  }
+
+  it('已压成摘要的原文不再进提示词（否则原文 + 摘要双份，越压越大）', async () => {
+    await db.settings.put({ key: SETTING_CONTEXT_MODE, value: 'recent' });
+    await db.settings.put({ key: SETTING_CONTEXT_LIMIT, value: '2' });
+    const { main } = captureAdapter();
+    await useSession.getState().init();
+    for (let i = 1; i <= 4; i += 1) await useSession.getState().send('第' + i + '句');
+
+    const chatId = useSession.getState().chatId!;
+    expect((await listSummaries(chatId)).length).toBeGreaterThan(0);
+    const last = main[main.length - 1].join('\n');
+    expect(last).toContain('更早的对话摘要');
+    expect(last).not.toContain('第1句');
+    expect(last).not.toContain('第2句');
+    expect(last).toContain('第3句');
+  });
+
+  it('全部带模式：没掉出窗口的旧对话照常注入；被摘要覆盖的原文不再注入', async () => {
+    await db.settings.put({ key: SETTING_CONTEXT_MODE, value: 'all' });
+    const { main } = captureAdapter();
+    await useSession.getState().init();
+    await useSession.getState().send('AAA');
+    await useSession.getState().send('BBB');
+    const msgs = useSession.getState().messages;
+    const chatId = useSession.getState().chatId!;
+    // 模拟第一对已经压成摘要
+    await addSummary({
+      chatId,
+      text: '旧记忆：上一段剧情',
+      userText: '上一段选择',
+      assistantText: '旧记忆：上一段剧情',
+      dateLabel: '10-14',
+      fromMessageId: msgs[0].id,
+      toMessageId: msgs[1].id,
+      messageCount: 2,
+      origin: 'model',
+    });
+    await useSession.getState().send('CCC');
+
+    const last = main[main.length - 1].join('\n');
+    expect(last).toContain('旧记忆：上一段剧情');
+    expect(last).toContain('BBB');     // 全部带：窗口内的旧对话仍然注入
+    expect(last).not.toContain('AAA'); // 已压成摘要的那对不再塞原文
+  });
+
+  it('压缩结果不比原文长：模型输出很长时退化为「原文保留」', async () => {
+    await db.settings.put({ key: SETTING_CONTEXT_MODE, value: 'recent' });
+    await db.settings.put({ key: SETTING_CONTEXT_LIMIT, value: '2' });
+    captureAdapter({ summaryAlwaysLong: true });
+    await useSession.getState().init();
+    for (const t of ['甲', '乙', '丙']) await useSession.getState().send(t);
+
+    const chatId = useSession.getState().chatId!;
+    const summaries = await listSummaries(chatId);
+    expect(summaries.length).toBe(1);
+    expect(summaries[0].origin).toBe('verbatim');
+    expect(summaries[0].text).not.toContain('长长长');
+    expect(summaries[0].text.length).toBeLessThan(60);
+    expect(summaries[0].text).toContain('甲');
+  });
+
+  it('攒够 3 对之后压成一条摘要（不是每对一条）', async () => {
+    await db.settings.put({ key: SETTING_CONTEXT_MODE, value: 'recent' });
+    await db.settings.put({ key: SETTING_CONTEXT_LIMIT, value: '2' });
+    await db.settings.put({ key: 'summaryBatchPairs', value: '3' });
+    const { main } = captureAdapter();
+    await useSession.getState().init();
+    for (let i = 1; i <= 5; i += 1) await useSession.getState().send('第' + i + '句');
+
+    const chatId = useSession.getState().chatId!;
+    const summaries = await listSummaries(chatId);
+    expect(summaries.length).toBe(1);
+    expect(summaries[0].messageCount).toBe(6);
+    expect(summaries[0].rangeLabel).toBe('第 1–6 条');
+    const last = main[main.length - 1].join('\n');
+    expect(last).toContain('更早的对话摘要');
+    expect(last).not.toContain('第1句');
+    expect(last).toContain('第4句');
+  });
+});
 });

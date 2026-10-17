@@ -25,6 +25,13 @@ export type SyncStatus = 'signed-out' | 'locked' | 'needs-choice' | 'idle' | 'sy
 export interface SyncUiState {
   username: string | null;
   status: SyncStatus;
+  /**
+   * 本次打開頁面後，是否已經用密碼成功解出 DEK。
+   * DEK 只存在記憶體裡，所以重新載入頁面後一定是 false（要求重新解鎖）。
+   * "已登入面板" 只認這個欄位，不能只看 username：密碼錯時 username 還在，
+   * 光看 username 就會出現「密碼錯也看起來登入成功」的假象。
+   */
+  unlocked: boolean;
   pending: number;
   conflicts: number;
   quota: { used: number; limit: number } | null;
@@ -70,6 +77,7 @@ export interface SyncActions {
 const INITIAL: SyncUiState = {
   username: null,
   status: 'signed-out',
+  unlocked: false,
   pending: 0,
   conflicts: 0,
   quota: null,
@@ -152,8 +160,9 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       set({ ...INITIAL });
       return;
     }
-    // token 還在但 DEK 只在記憶體裡 → 需要解鎖
-    set({ username, status: currentDek ? get().status : 'locked', message: null });
+    // token 還在但 DEK 只在記憶體裡 → 需要解鎖。
+    // unlocked 直接綁定「記憶體裡有沒有 DEK」：重新載入頁面後 DEK 沒了 → false。
+    set({ username, status: currentDek ? get().status : 'locked', message: null, unlocked: currentDek !== null });
 
     // 重新載入頁面後連的是**預設庫**（未登入那一份）。不切回帳號專屬的庫，
     // 使用者看到的就是「同步過去的資料不見了」——所以要主動切回來並通知畫面重讀。
@@ -170,6 +179,7 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
   async register({ username, inviteCode, password, ...seams }) {
     const name = username.trim().toLowerCase();
     const kdf = seams.kdf ?? PROD_KDF;
+    let dekReady = false;
     try {
       const client = makeClient(seams);
       const authKey = await deriveAuthKey(password, name, kdf);
@@ -194,19 +204,29 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       saveUsername(name);
       saveKdf(name, kdf);
       currentDek = dek;
+      dekReady = true;   // 帳號已經真的建好了：之後再失敗也不能退回註冊表單
 
       const snapshot = await snapshotAnonymousData(anonymous);
       const account = await switchDatabase(dbNameFor(name));
       await writeSnapshot(account, snapshot);
       await initialPush(context(client, account));
-      set({ username: name, status: 'idle', message: null });
+      set({ username: name, status: 'idle', message: null, unlocked: true });
       // 換庫了：設定快取是舊庫的值，畫面也還停在舊庫的資料
       resetSettingCache();
       bumpData('register');
       await get().runSync(seams);
       return { recoveryCode };
     } catch (err) {
-      set({ status: 'error', message: errorMessage(err) });
+      /*
+       * 帳號已經建好（token 與 DEK 都有了）之後才失敗，例如第一次推送失敗：
+       * 這時不能退回註冊表單 —— 帳號真的存在，要讓使用者看到帳號面板並按「立即同步」重試。
+       */
+      set({
+        username: dekReady ? name : get().username,
+        status: 'error',
+        unlocked: dekReady,
+        message: errorMessage(err),
+      });
       throw err;
     }
   },
@@ -244,16 +264,30 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
         set({
           username: name,
           status: 'needs-choice',
+          unlocked: true,
           pendingChoice: { localRows, cloudBytes: me.quota.used },
           message: '这台装置和云端都有资料，请选择要保留哪一边',
         });
         return;
       }
 
-      set({ username: name, status: 'idle', message: null, pendingChoice: null });
+      set({ username: name, status: 'idle', message: null, pendingChoice: null, unlocked: true });
       await get().runSync(seams);
     } catch (err) {
-      set({ status: 'error', message: errorMessage(err) });
+      /*
+       * 任何失敗都代表「這個頁面還沒解出 DEK」，所以 unlocked 一定回到 false ——
+       * 否則密碼打錯（401）時 username 還在、狀態變 error，畫面就會切到「已登入面板」，
+       * 看起來像「密碼錯也能登入」（這是使用者投訴的 bug）。
+       * 本機還留著 token 與帳號名 = 使用者本來就登入著、只是重新打開頁面或解鎖時打錯 →
+       * 回到 locked 要求正確密碼；否則就是未登入。
+       */
+      currentDek = null;
+      const stillSignedIn = Boolean(loadTokens() && loadUsername());
+      set({
+        status: stillSignedIn ? 'locked' : 'signed-out',
+        unlocked: false,
+        message: errorMessage(err),
+      });
       throw err;
     }
   },
@@ -470,11 +504,13 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       saveKdf(name, newKdf);
       await client.login({ username: name, authKey: newAuthKey, label: deviceLabel() });
       await switchDatabase(dbNameFor(name));
-      set({ username: name, status: 'idle', message: null });
+      set({ username: name, status: 'idle', message: null, unlocked: true });
       await get().runSync(seams);
       return { recoveryCode: nextRecoveryCode };
     } catch (err) {
-      set({ status: 'error', message: errorMessage(err) });
+      // 救回失敗：DEK 沒有留在記憶體裡 → unlocked=false（不能出現「沒解鎖卻顯示帳號面板」）
+      currentDek = null;
+      set({ status: 'error', message: errorMessage(err), unlocked: false });
       throw err;
     }
   },
