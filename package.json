@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "worker:dev": "wrangler dev --config worker/wrangler.jsonc",
     "worker:deploy": "wrangler deploy --config worker/wrangler.jsonc",
+    "invite": "node worker/scripts/mint-invite-http.mjs",
     "d1:migrate:local": "wrangler d1 migrations apply dsh-sync --local --config worker/wrangler.jsonc",
     "d1:migrate:remote": "wrangler d1 migrations apply dsh-sync --remote --config worker/wrangler.jsonc"
   },

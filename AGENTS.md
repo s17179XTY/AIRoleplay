@@ -74,7 +74,8 @@
     npm run d1:migrate:local                       # 建本机 D1（在 .wrangler/state，已 gitignore）
     npm run worker:dev                             # 本机起 Worker（http://127.0.0.1:8787）
     node worker/smoke.mjs                          # 对 wrangler dev 打端到端冒烟（31 项）
-    node worker/scripts/mint-invite.mjs "给 alice"  # 产生一次性邀请码
+    node worker/scripts/mint-invite.mjs "给 alice"  # 旧写法：产生邀请码 + 打印要手动执行的 SQL
+    node worker/scripts/mint-invite-http.mjs "给 alice" [有效天数]  # 一键走线上 admin API 生成（自动读 .env.local / shots/admin-secret.txt 的 ADMIN_SECRET）
 
     前端指向后端：.env.local 写 VITE_SYNC_API=http://127.0.0.1:8787（本机）或线上 Worker 网址（部署用）。
 
