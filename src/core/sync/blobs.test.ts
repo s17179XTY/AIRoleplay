@@ -9,7 +9,7 @@ import { pushPending, pullChanges, getRev } from './engine';
 import { plaintextOf, ensureBlobUploaded, ensureBlobLocal, needsBlob, MAX_BLOB_BATCH } from './blobs';
 import { deriveAuthKey, deriveMasterKey, deriveRecoveryAuthKey, deriveRecoveryKey, generateRecoveryCode, TEST_KDF } from './kdf';
 import { generateDek, wrapDek, decryptEnvelope } from './envelope';
-import { encryptBlob } from './blob';
+import { BLOB_INLINE_LIMIT, encryptBlob } from './blob';
 
 const rnd = () => Math.random().toString(36).slice(2);
 const INVITE = 'INV-BLOB';
@@ -59,10 +59,10 @@ describe('blob 引擎', () => {
     expect(await plaintextOf(db, 'chat', 'chat_1')).toBeNull();
   });
 
-  it('門檻判斷：二進位一律走 blob、文本超過 256 KiB 才走', () => {
+  it('門檻判斷：二進位一律走 blob、文本超過 BLOB_INLINE_LIMIT（180 KiB）才走', () => {
     expect(needsBlob('assetMeta', new Uint8Array(1))).toBe(true);
-    expect(needsBlob('cardFile', new Uint8Array(256 * 1024))).toBe(false);
-    expect(needsBlob('cardFile', new Uint8Array(256 * 1024 + 1))).toBe(true);
+    expect(needsBlob('cardFile', new Uint8Array(BLOB_INLINE_LIMIT))).toBe(false);
+    expect(needsBlob('cardFile', new Uint8Array(BLOB_INLINE_LIMIT + 1))).toBe(true);
   });
 
   it('大文本走 blob：信封只帶 blobRef（v2 金鑰由 DEK+blobId 推導），明文不進信封', async () => {

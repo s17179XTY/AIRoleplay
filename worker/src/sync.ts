@@ -113,6 +113,23 @@ export async function handlePush(
     return fail(400, 'batch_too_large', `每批最多 ${MAX_PUSH_BATCH} 筆`);
   }
 
+  /*
+   * 先整批驗證再開始寫。
+   * 以前在迴圈裡遇到「單筆太大/缺 ciphertext」才 return，前面幾筆已經落庫但回應沒有 accepted，
+   * 前端就不會清 outbox → 下一輪整批重推 → 又一輪寫入 + 衝突副本，形成放大環（額度就是這樣燒掉的）。
+   */
+  for (const record of input.records) {
+    if (typeof record.kind !== 'string' || typeof record.id !== 'string') {
+      return fail(400, 'bad_record', '記錄缺少 kind 或 id');
+    }
+    if (record.deleted) continue;
+    const recordSize = record.size ?? (record.ciphertext ?? '').length;
+    if (recordSize > MAX_ROW_BYTES) return fail(413, 'row_too_large', '單筆記錄超過 256 KiB，請走 blob');
+    if (typeof record.ciphertext !== 'string' || record.ciphertext.length === 0) {
+      return fail(400, 'bad_record', '記錄缺少 ciphertext');
+    }
+  }
+
   const accepted: Array<{ kind: string; id: string; rev: number }> = [];
   const conflicts: Array<Record<string, unknown>> = [];
 

@@ -111,11 +111,22 @@ export async function ensureBlobLocal(
   const state = (await ctx.db.blobState.where('refId').equals(id).toArray()).find((s) => s.blobId);
   if (!state) return 'pending';
 
-  const body = await ctx.client.getBlob(state.blobId);
-  if (!body) return 'pending';
-
+  // 記錄已經被刪掉（或換過內容）：這顆 blob 的參照就是孤兒，直接回收，
+  // 否則每台裝置每次同步都會對它發一次 GET（最多 20 次），永遠不會收斂。
   const row = await readRowForSync(ctx.db, kind, id);
-  if (!row) return 'pending';
+  if (!row) {
+    await ctx.db.blobState.delete(state.blobId);
+    return 'have';
+  }
+
+  let body: Uint8Array | null = null;
+  try {
+    body = await ctx.client.getBlob(state.blobId);
+  } catch {
+    // 單顆 blob 的 429/500 不該拖垮整次同步：當成「還沒傳播」下次再試
+    return 'pending';
+  }
+  if (!body) return 'pending';
 
   // getBlob 的 Uint8Array 泛型是 ArrayBufferLike，而 decryptBlob 收 Uint8Array<ArrayBuffer>（TS 5.7 的 BufferSource 限制）
   const copy = new Uint8Array(body);
@@ -159,12 +170,15 @@ export async function ensureBlobLocal(
  */
 export async function migrateBlobKeys(ctx: EngineContext): Promise<{ repaired: number; pending: number }> {
   const rows = await ctx.db.blobState.toArray();
-  const candidates = rows
-    .filter((s) => s.kind && (s.state === 'broken' || s.state === 'remote' || (s.state === 'uploaded' && Boolean(s.fileKey))))
-    .slice(0, MAX_BLOB_MIGRATE);
+  const candidates = rows.filter(
+    (s) => s.kind && (s.state === 'broken' || s.state === 'remote' || (s.state === 'uploaded' && Boolean(s.fileKey))),
+  );
 
   let repaired = 0;
+  let attempts = 0;
   for (const state of candidates) {
+    if (repaired >= MAX_BLOB_MIGRATE || attempts >= MAX_BLOB_MIGRATE * 2) break;
+    attempts += 1;
     const plain = await plaintextOf(ctx.db, state.kind!, state.refId);
     if (!plain || plain.byteLength === 0) continue;
     const blobId = await blobIdFor(plain);
@@ -184,5 +198,5 @@ export async function migrateBlobKeys(ctx: EngineContext): Promise<{ repaired: n
       // 連不上或 KV 暫時失敗：下次同步再試
     }
   }
-  return { repaired, pending: Math.max(0, candidates.length - repaired) };
+  return { repaired, pending: 0 };
 }

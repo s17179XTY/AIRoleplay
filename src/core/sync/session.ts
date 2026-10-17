@@ -69,6 +69,15 @@ export function loadKdf(username: string): { algo: 'PBKDF2-SHA256'; iters: numbe
   }
 }
 
+/** 刪掉「這台裝置用過哪個帳號」的殘留（刪除帳號時用） */
+export function removeKdf(username: string): void {
+  try {
+    globalThis.localStorage?.removeItem('dsh-sync-kdf:' + username.toLowerCase());
+  } catch {
+    // 隱私模式：沒得刪就算了
+  }
+}
+
 export function saveKdf(username: string, kdf: { algo: string; iters: number; v: number }): void {
   try {
     globalThis.localStorage?.setItem(`dsh-sync-kdf:${username.toLowerCase()}`, JSON.stringify(kdf));

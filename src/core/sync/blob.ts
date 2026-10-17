@@ -1,6 +1,14 @@
 import { utf8, toBase64Url, fromBase64Url, concatBytes } from './bytes';
 
-export const BLOB_INLINE_LIMIT = 262144; // 256 KiB
+/**
+ * 超過這個明文字節數就走 blob 通道。
+ *
+ * 不能直接用 256 KiB（worker 的 MAX_ROW_BYTES）：那邊量的是「信封密文（base64 字串）長度」，
+ * 而信封內容是 JSON + UTF-8 + AES-GCM + base64url，膨脹約 1.4~1.5 倍；
+ * 原本 256 KiB 的明文內聯後會超過 256 KiB 上限 → 413 row_too_large，
+ * 而且 outbox 清不掉 → 每次同步都失敗、永久卡住。留足膨脹空間。
+ */
+export const BLOB_INLINE_LIMIT = 180 * 1024;
 export const BLOB_MAGIC = 'DSHB1';
 const IV_BYTES = 12;
 

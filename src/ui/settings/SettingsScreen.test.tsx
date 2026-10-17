@@ -192,19 +192,28 @@ describe('设置页', () => {
     });
   });
 
-  it('清空本机所有数据：每一张表都清空（内置卡下次进入会自动重建）', async () => {
+  it('清空本机所有数据：数据库整个重建（表全空）＋登入状态一起清掉', async () => {
     await ensureSeedCard();
     await db.chats.put({
       id: 'chat_1', cardId: DEMO_CARD_ID, title: '对话', vars: {}, promptSnapshot: '',
       providerId: null, modelPresetId: null, currentLeafId: null,
       createdAt: 1, updatedAt: 1, archived: 0,
     });
+    localStorage.setItem('dsh-sync-tokens', '{"accessToken":"a","refreshToken":"b"}');
+    localStorage.setItem('dsh-sync-user', 'alice');
 
     render(<SettingsScreen />);
     await waitFor(() => expect(screen.getByText('清空本机所有数据')).toBeTruthy());
     fireEvent.click(screen.getByText('清空本机所有数据'));
 
+    // 清完會重新開一個乾淨的預設庫（reload 之前畫面不能拿著已刪除的連線）
+    await waitFor(() => expect(localStorage.getItem('dsh-sync-tokens')).toBeNull());
+    expect(localStorage.getItem('dsh-sync-user')).toBeNull();
     await waitFor(async () => expect(await db.chats.count()).toBe(0));
     expect(await db.cards.count()).toBe(0);
+    expect(await db.cardFiles.count()).toBe(0);
+    expect(await db.assets.count()).toBe(0);
+    localStorage.removeItem('dsh-sync-tokens');
+    localStorage.removeItem('dsh-sync-user');
   });
 });

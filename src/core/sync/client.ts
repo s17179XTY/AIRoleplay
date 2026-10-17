@@ -149,15 +149,22 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
       try {
         parsed = JSON.parse(text) as Record<string, unknown>;
       } catch {
-        parsed = { code: 'bad_response', message: text.slice(0, 120) };
+        // Cloudflare 的錯誤頁是 HTML：不要把整段 HTML 塞進 message（使用者看不懂，也截不到錯誤碼）
+        parsed = { code: 'bad_response' };
       }
     }
     if (!response.ok) {
-      throw new SyncApiError(
-        response.status,
-        typeof parsed.code === 'string' ? parsed.code : 'http_error',
-        typeof parsed.message === 'string' ? parsed.message : `HTTP ${response.status}`,
-      );
+      // Cloudflare 的錯誤體長這樣：{ success:false, errors:[{ code:1027, message:'...' }] }
+      const cf = Array.isArray(parsed.errors) && parsed.errors.length > 0
+        ? parsed.errors[0] as { code?: unknown; message?: unknown }
+        : null;
+      const code = typeof parsed.code === 'string'
+        ? parsed.code
+        : cf && cf.code !== undefined ? String(cf.code) : 'http_error';
+      const message = typeof parsed.message === 'string'
+        ? parsed.message
+        : cf && typeof cf.message === 'string' ? cf.message : `HTTP ${response.status}`;
+      throw new SyncApiError(response.status, code, message);
     }
     return parsed;
   }
@@ -172,8 +179,13 @@ export function createSyncClient(opts: SyncClientOptions): SyncClient {
       })) as { accessToken: string; refreshToken: string };
       setTokens({ accessToken: out.accessToken, refreshToken: out.refreshToken });
       return true;
-    } catch {
-      setTokens(null);
+    } catch (err) {
+      /*
+       * 只有「refresh token 真的失效」（400/401）才清掉登入狀態。
+       * 斷網、429、Cloudflare 額度頁都不該讓使用者變成「請先登入」——
+       * 那會把「暫時連不上/額度用完」誤判成帳號壞掉。
+       */
+      if (err instanceof SyncApiError && (err.status === 400 || err.status === 401)) setTokens(null);
       return false;
     }
   }

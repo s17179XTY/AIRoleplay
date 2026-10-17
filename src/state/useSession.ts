@@ -118,6 +118,8 @@ export interface SessionState {
   consumeRestoreInput: () => void;
   error: string | null;
   init: () => Promise<void>;
+  /** 換庫 / 清空本機資料 / 登出之後把整份會話狀態歸零（避免還顯示上一個帳號的卡片與對話） */
+  reset: () => void;
   openCard: (cardId: string) => Promise<void>;
   reloadCard: () => Promise<void>;
   /** 換庫 / 同步之後把畫面上的資料重讀一次（沒有它就會「同步完 UI 沒更新」） */
@@ -657,6 +659,40 @@ export const useSession = create<SessionState>((set, get) => {
     error: null,
 
     consumeRestoreInput: () => set({ restoreInput: null }),
+
+    /**
+     * 把會話狀態歸零。
+     *
+     * 為什麼需要：切到設定頁時 PlayScreen 會卸載，但 zustand 的 useSession 是模組層、不會被卸載。
+     * 在設定頁登出 / 換帳號 / 清空本機資料之後再切回「遊玩」，init() 的冪等守衛（ready === true）
+     * 會直接 return，畫面就仍顯示**上一個帳號**的卡片與對話——資料隔離在這裡破功。
+     */
+    reset: () => {
+      // 進行中的串流／摘要必須先停：否則它收尾時會把訊息寫進「換庫後的新 db」（孤兒資料）
+      currentAbort?.abort();
+      currentAbort = null;
+      summarizeAbort?.abort();
+      summarizeAbort = null;
+      summaryFailures.clear();
+      set({
+      ready: false,
+      cardId: null,
+      cardName: '',
+      card: null,
+      chatId: null,
+      messages: [],
+      draft: '',
+      streaming: false,
+      summarizing: false,
+      restoreInput: null,
+      error: null,
+      memories: [],
+      memoryCount: 0,
+      cardUiHtml: null,
+      regexRules: [],
+      modelLabel: 'mock 模拟模型',
+      });
+    },
 
     init: async () => {
       /**

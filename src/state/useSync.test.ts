@@ -315,4 +315,37 @@ describe('useSync', () => {
       expect((await db.settings.get('fromA'))?.value).toBe('A');
     });
   });
+
+  it('Cloudflare 429/額度限流：訊息翻成「等額度恢復」而不是原始錯誤', async () => {
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ ok: false, code: 'rate_limited', message: 'too many requests' }),
+      { status: 429, headers: { 'content-type': 'application/json' } },
+    )) as unknown as typeof fetch;
+    await expect(useSync.getState().login({
+      username: 'alice', password: 'pw', fetchImpl, baseUrl: 'https://api.test', kdf: TEST_KDF,
+    })).rejects.toBeTruthy();
+    expect(useSync.getState().message ?? '').toContain('限流');
+  });
+
+  it('503 backend_quota（Cloudflare 額度/資源）：翻成「等額度恢復」而不是原始錯誤', async () => {
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ ok: false, code: 'backend_quota', message: '雲端額度/資源暫時用盡，請稍後再試' }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    )) as unknown as typeof fetch;
+    await expect(useSync.getState().login({
+      username: 'alice', password: 'pw', fetchImpl, baseUrl: 'https://api.test', kdf: TEST_KDF,
+    })).rejects.toBeTruthy();
+    expect(useSync.getState().message ?? '').toContain('額度');
+  });
+
+  it('真 500 internal：保留「伺服器內部錯誤」但明說不是密碼/資料問題（不誤導成額度）', async () => {
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ ok: false, code: 'internal', message: '伺服器內部錯誤（不是你的帳號或資料問題）' }),
+      { status: 500, headers: { 'content-type': 'application/json' } },
+    )) as unknown as typeof fetch;
+    await expect(useSync.getState().login({
+      username: 'alice', password: 'pw', fetchImpl, baseUrl: 'https://api.test', kdf: TEST_KDF,
+    })).rejects.toBeTruthy();
+    expect(useSync.getState().message ?? '').toContain('不是你的密碼或資料問題');
+  });
 });

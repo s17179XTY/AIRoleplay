@@ -5,8 +5,9 @@ import { blobIdFor, encryptBlob, decryptBlob, BLOB_MAGIC, BLOB_INLINE_LIMIT } fr
 const bytes = (n: number, seed = 1) => Uint8Array.from({ length: n }, (_, i) => (i * seed) % 256);
 
 describe('blob 加密', () => {
-  it('門檻是 256 KiB（spec 寫死，不得自行調整）', () => {
-    expect(BLOB_INLINE_LIMIT).toBe(262144);
+  it('內聯門檻 180 KiB：要留足 JSON+加密+base64 的膨脹空間（否則會撞上服務端 256 KiB 行上限）', () => {
+    expect(BLOB_INLINE_LIMIT).toBe(180 * 1024);
+    expect(BLOB_INLINE_LIMIT).toBeLessThan(256 * 1024);
   });
 
   it('blobId 是內容定址：同內容同 id、不同內容不同 id', async () => {

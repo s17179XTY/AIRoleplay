@@ -50,7 +50,13 @@ export async function handlePutBlob(
     } else if (delta < 0) {
       await refundQuota(env, userId, -delta);
     }
-    await env.BLOBS.put(blobKey(userId, blobId), bytes, { metadata: { size } });
+    try {
+      await env.BLOBS.put(blobKey(userId, blobId), bytes, { metadata: { size } });
+    } catch (err) {
+      // 先扣了差額、KV 卻寫失敗：把差額退回去，否則重試會把 used_bytes 越扣越高
+      if (delta > 0) await refundQuota(env, userId, delta);
+      throw err;
+    }
     await env.DB.prepare('UPDATE blobs SET size = ? WHERE blob_id = ? AND user_id = ?')
       .bind(size, blobId, userId)
       .run();

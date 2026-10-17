@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { createSyncClient, type DeviceInfo, type SyncClient } from '../core/sync/client';
 import {
-  loadKdf, loadTokens, loadUsername, saveKdf, saveTokens, saveUsername, syncApiBaseUrl,
+  loadKdf, loadTokens, loadUsername, removeKdf, saveKdf, saveTokens, saveUsername, syncApiBaseUrl,
 } from '../core/sync/session';
 import {
   deriveAuthKey, deriveMasterKey, deriveRecoveryAuthKey, deriveRecoveryKey,
@@ -16,9 +16,11 @@ import {
 import { pendingCount } from '../core/sync/outbox';
 import { LOCAL_ONLY_TABLES } from '../core/sync/kinds';
 import { db, switchDatabase, currentDbName, dbNameFor, DEFAULT_DB_NAME, type DshDB } from '../core/storage/db';
-import { clearLocalData } from '../core/storage/reset';
+import { clearLocalData, deleteLocalDatabase } from '../core/storage/reset';
 import { resetSettingCache } from './useSetting';
 import { bumpData } from './useData';
+import { useSession } from './useSession';
+import { useComposer } from './useComposer';
 
 export type SyncStatus = 'signed-out' | 'locked' | 'needs-choice' | 'idle' | 'syncing' | 'error';
 
@@ -57,6 +59,8 @@ export interface SyncActions {
   unlock(password: string, seams?: SyncSeams): Promise<void>;
   logout(): Promise<void>;
   runSync(seams?: SyncSeams, opts?: { askIfBothSides?: boolean }): Promise<void>;
+  /** 內部：runSync 的互斥/冷卻包裝真正呼叫的單輪同步 */
+  _runSyncOnce(seams?: SyncSeams, opts?: { askIfBothSides?: boolean }): Promise<void>;
   loadDevices(seams?: SyncSeams): Promise<void>;
   revokeDevice(id: string, seams?: SyncSeams): Promise<void>;
   dismissConflicts(): Promise<void>;
@@ -137,23 +141,79 @@ async function writeSnapshot(target: DshDB, snapshot: Array<{ name: string; rows
   }
 }
 
+/**
+ * 錯誤訊息一律「按 code/status 判斷」，不要用訊息文字猜。
+ *
+ * 為什麼：Cloudflare 的額度錯誤頁沒有 CORS 標頭，瀏覽器只會丟 TypeError（看起來像斷網），
+ * 原文根本到不了 JS；而 worker 現在會把額度/資源問題分成 503 + code backend_quota，
+ * 所以 client 端只認 status / code，才不會把「真 500」誤判成額度、或把額度誤判成帳號壞掉。
+ */
 function errorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+  const status = (err as { status?: number } | null)?.status;
+  const code = (err as { code?: string } | null)?.code;
   if (raw.includes('VITE_SYNC_API')) return '這個版本沒有設定同步後端';
-  if (raw.includes('Failed to fetch') || raw.includes('NetworkError')) return '連不上伺服器，請稍後重試';
+
+  if (code === 'rate_limited' || (status === 429 && code !== 'backend_quota')) {
+    return '嘗試太頻繁／請求次數達到雲端限流，請過 1 分鐘再試；本機資料不受影響。';
+  }
+  if (code === 'backend_quota' || status === 503) {
+    return '雲端今天的額度用完了（免費方案：每天 10 萬次請求、1,000 次儲存寫入；UTC 0 點＝北京時間早上 8 點重置）。'
+      + '本機的卡片與對話完全沒丟，等額度恢復後按「立即同步」就會補上，現在可以先離線繼續玩。';
+  }
+  if (raw.includes('Failed to fetch') || raw.includes('NetworkError') || raw.includes('Load failed')) {
+    return '連不上伺服器：可能是網路斷了，也可能是雲端額度被 Cloudflare 攔住（兩者畫面一模一樣）。'
+      + '若手機能上網卻一直失敗，多半是額度用完了，等一段時間再試；本機資料不受影響。';
+  }
   // WebCrypto 的 DOMException 對使用者完全看不懂，翻成「資料對不上」並給可行的下一步。
   // 注意：單一素材解不開已經在同步引擎裡被接住（跳過 + 提示），走到這裡代表是更根本的金鑰問題。
   if (raw.includes('operation-specific') || raw.includes('OperationError') || raw.includes('解密失敗')) {
     return '解密失敗：本機與雲端的加密資料對不上。請先「退出登入 → 重新登入」再試；'
       + '如果仍然失敗，多半是這個帳號的雲端金鑰來自舊版本、已經損壞，可以試「忘記密碼 → 用恢復碼救回」重建金鑰（本機資料不受影響）。';
   }
+  if ((typeof status === 'number' && status >= 500) || raw.includes('伺服器內部錯誤')) {
+    return '伺服器內部錯誤（不是你的密碼或資料問題），請稍後再試；一直失敗請截圖回報。';
+  }
   return raw;
+}
+
+/** 同步互斥 + 手動點擊冷卻：避免連點「立即同步」把同一批資料並發推兩次（衝突副本、請求翻倍） */
+let syncInFlight = false;
+let lastManualSyncAt = 0;
+
+/** 清掉記憶體裡的登入金鑰/裝置 id（清空本機資料、模擬重新載入時用） */
+export function resetSyncMemory(): void {
+  currentDek = null;
+  deviceId = null;
+}
+
+/** 換庫前先停掉正在跑的生成／摘要，避免串流收尾把訊息寫進「換庫後」的新庫（orphan） */
+async function stopActiveGeneration(): Promise<void> {
+  const state = useSession.getState();
+  if (!state.streaming && !state.summarizing) return;
+  state.stop();
+  const started = Date.now();
+  while (Date.now() - started < 3000) {
+    const now = useSession.getState();
+    if (!now.streaming && !now.summarizing) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * 換庫 / 登出 / 刪帳號之後把「畫面狀態」也歸零。
+ *
+ * 只換資料庫不夠：PlayScreen 卸載時 useSession / useComposer 是模組層的，
+ * 再切回「遊玩」會看到上一個帳號的卡片、對話與輸入框草稿（init 的冪等守衛會讓它不重讀）。
+ */
+function resetUiForAccountSwitch(): void {
+  useSession.getState().reset();
+  useComposer.setState({ texts: {} });
 }
 
 /** 測試用：模擬「頁面重新載入」——模組記憶體裡的 DEK 與 deviceId 都會消失 */
 export function __resetSyncMemoryForTest(): void {
-  currentDek = null;
-  deviceId = null;
+  resetSyncMemory();
 }
 
 export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
@@ -176,10 +236,12 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     const target = dbNameFor(username);
     if (currentDbName() === target) return;
     void (async () => {
-      await switchDatabase(target);
+        await stopActiveGeneration();
+    await switchDatabase(target);
       resetSettingCache();
+      resetUiForAccountSwitch();
       bumpData('reopen');
-    })();
+    })().catch(() => undefined); // 換庫失敗不該變成未處理 rejection
   },
 
   async register({ username, inviteCode, password, ...seams }) {
@@ -213,12 +275,22 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       dekReady = true;   // 帳號已經真的建好了：之後再失敗也不能退回註冊表單
 
       const snapshot = await snapshotAnonymousData(anonymous);
+      await stopActiveGeneration();
       const account = await switchDatabase(dbNameFor(name));
+      // 先把資料完整寫進帳號庫，成功之後才清匿名庫：
+      // 這樣「寫帳號庫失敗（額度/斷網）」時，使用者註冊前的卡片與對話不會兩邊都沒有。
       await writeSnapshot(account, snapshot);
+      try {
+        await anonymous.open();
+        await clearLocalData(anonymous);
+      } catch {
+        // 匿名庫清不掉不影響註冊（資料已在帳號庫）；之後「清空本機所有資料」會再處理
+      }
       await initialPush(context(client, account));
       set({ username: name, status: 'idle', message: null, unlocked: true });
       // 換庫了：設定快取是舊庫的值，畫面也還停在舊庫的資料
       resetSettingCache();
+      resetUiForAccountSwitch();
       bumpData('register');
       await get().runSync(seams);
       return { recoveryCode };
@@ -243,6 +315,15 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     const kdf = seams.kdf ?? loadKdf(name) ?? PROD_KDF;
     try {
       const client = makeClient(seams);
+      // 從 A 帳號切到 B：先把 A 的雲端 session 撤掉（本機 token 會被覆蓋，不然 A 永遠掛在裝置清單）
+      const previousUser = loadUsername();
+      if (previousUser && previousUser !== name && loadTokens()) {
+        try {
+          await client.logout();
+        } catch {
+          // 舊 session 撤不掉不影響登入新帳號
+        }
+      }
       await client.login({ username: name, authKey: await deriveAuthKey(password, name, kdf), label: deviceLabel() });
 
       const me = await client.me();
@@ -257,8 +338,10 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
 
       saveUsername(name);
       saveKdf(name, serverKdf);
+      await stopActiveGeneration();
       await switchDatabase(dbNameFor(name));
       resetSettingCache();
+      resetUiForAccountSwitch();
       bumpData('login');
 
       /*
@@ -355,10 +438,12 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
     }
     currentDek = null;
     saveUsername(null);
+      await stopActiveGeneration();
     await switchDatabase(DEFAULT_DB_NAME);
     set({ ...INITIAL });
     // 回到未登入的預設庫：設定快取與畫面都必須跟著換，否則看起來像資料消失了
     resetSettingCache();
+    resetUiForAccountSwitch();
     bumpData('logout');
   },
 
@@ -371,20 +456,53 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       set({ status: 'error', message: errorMessage(err) });
       throw err;
     }
+    // 帳號庫清掉後，切回預設庫，**預設庫也要清**：註冊前累積的匿名資料
+    // 雖然已搬進帳號庫，但舊版沒清，留著會讓「刪除帳號後本機還有東西」。
     await clearLocalData();
+    const deletedName = get().username;
     currentDek = null;
     saveTokens(null);
     saveUsername(null);
+    await stopActiveGeneration();
     await switchDatabase(DEFAULT_DB_NAME);
+    await clearLocalData();
+    if (deletedName) {
+      // 「這台裝置用過哪個帳號」的 KDF 與空的帳號庫也要一起清掉，不然刪完帳號本機還有殘留
+      removeKdf(deletedName);
+      await deleteLocalDatabase(dbNameFor(deletedName));
+    }
     set({ ...INITIAL });
     resetSettingCache();
+    resetUiForAccountSwitch();
     bumpData('account-deleted');
   },
 
   async runSync(seams = {}, opts = {}) {
     const username = get().username;
     if (!username || !currentDek) return;
+    // 連點「立即同步」：同一時間只允許一輪，避免兩批推送互撞出衝突副本
+    if (syncInFlight) return;
+    if (opts.askIfBothSides) {
+      const now = Date.now();
+      if (now - lastManualSyncAt < 4000) {
+        set({ message: '同步太頻繁，請稍等幾秒再試（本機資料不受影響）' });
+        return;
+      }
+      lastManualSyncAt = now;
+    }
+    syncInFlight = true;
+    try {
+      await get()._runSyncOnce(seams, opts);
+    } finally {
+      syncInFlight = false;
+    }
+  },
 
+  /** 真正跑一輪同步（由 runSync 的互斥/冷卻包住） */
+  async _runSyncOnce(
+    seams: SyncSeams = {},
+    opts: { askIfBothSides?: boolean } = {},
+  ) {
     /*
      * 手動按「立即同步」時先問一次（使用者要求：同步時詢問，不要常駐按鈕）。
      * 只在**本地真的有東西要推**（outbox 非空）而且**雲端也有資料**時才問 ——
@@ -523,6 +641,7 @@ export const useSync = create<SyncUiState & SyncActions>((set, get) => ({
       saveUsername(name);
       saveKdf(name, newKdf);
       await client.login({ username: name, authKey: newAuthKey, label: deviceLabel() });
+      await stopActiveGeneration();
       await switchDatabase(dbNameFor(name));
       set({ username: name, status: 'idle', message: null, unlocked: true });
       await get().runSync(seams);

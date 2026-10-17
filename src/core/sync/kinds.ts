@@ -21,7 +21,7 @@ export const SYNC_TABLES: Record<SyncKind, string> = {
   mod: 'mods',
 };
 
-export const LOCAL_ONLY_TABLES = ['syncOutbox', 'syncState', 'syncConflicts', 'blobState'];
+export const LOCAL_ONLY_TABLES = ['syncOutbox', 'syncState', 'syncRev', 'syncConflicts', 'blobState'];
 
 /** 二進位本體走 blob 通道，信封只帶中繼資料 */
 export function isBlobKind(kind: SyncKind): boolean {

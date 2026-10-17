@@ -243,6 +243,14 @@
 | 密码正确却「无法解开加密金鑰」 | `unwrapDek` 的 AES-GCM 失败（云端 wrapped_dek 来自旧版本/损坏） | 登录时单独接住，换成中文可行动提示「用恢复码救援重建金鑰」，不再吐原始 DOMException；`errorMessage()` 也统一把 `OperationError` 翻成人话。 |
 | 探针莫名其妙失败（比如 + 新对话后 chats 数量没变） | E2E 结束时只删了云端账号、没清浏览器里的 token；之后跑 UI 探针时页面处于「已登录/锁定」，写进的是账号库，而探针数的是匿名库 | 跑完账号 E2E **删掉探针 profile 目录**再跑 UI 探针（或探针启动时 `localStorage.clear()`）。 |
 
+### 第五轮使用者实测回報後補上的坑（2026-10-18 第三批：清空本机数据 / 云端额度）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| **按「清空本机所有数据」后很多东西没清掉** | 旧实现只清**当前那个** Dexie 库的表：① 账号是「一账号一库」，旧账号库与未登入的默认库都还在；② 注册时匿名库资料只被抄进账号库、匿名库本身没清，登出/删号后又冒出来；③ localStorage 的 token/用户名/KDF 没清，重载后又自动登录回账号库；④ useSession/useComposer 是模块层状态，清库不会消失，切回游玩仍显示旧会话 | 新 wipeAllLocalData()：枚举并删除**所有**本程式 IndexedDB（indexedDB.databases() + 用 dsh-sync-kdf:* 反推旧账号库）、清 dsh-sync-*、重置模块状态、重新载入。deleteDatabase 被其它分页 block 时**返回 failed、不清 token、不报成功**。注册改成「先写账号库成功、再清匿名库」；删账号同时删 KDF 与账号 IndexedDB。 |
+| 同步报 operation-specific 后一直失败、疑似额度 | 除了 blob 金钥对不上（第四轮），还有几条放大/误判：① 拉取把本机 uploaded 的 blob 降级成 remote → 同一轮又重传（KV 写翻倍）；② 内联阈值 256 KiB（明文）> 服务端行上限 256 KiB（base64 密文），约 190KB 的卡片页会 413 且 outbox 清不掉 → **每次同步永久失败**；③ 批量推送中途 413 → 前面的已落库但响应无 accepted → 整批重推 + 冲突副本放大；④ refresh token 失败时断网/429 也清 token，看起来像账号坏了；⑤ Cloudflare 额度错误页无 CORS → 浏览器只看到 TypeError，被当成「连不上」 | ① 拉取保留 uploaded 状态；② BLOB_INLINE_LIMIT 降到 180 KiB；③ push 进循环前整批校验 size/ciphertext，超限整批不写；④ 只有 400/401 才清 token；⑤ worker 把额度/资源类异常回 503 backend_quota，前端按 status/code 翻成「等额度恢复/限流」，真 500 明说「不是你的密码或资料问题」。另：同步互斥 + 手动「立即同步」4 秒冷却，避免连点并发推送。 |
+| 云端 blob 越同步越多 KV 写 | 拉取降级 + migrateBlobKeys 把 remote 也当待修；孤儿 blobState 每次同步固定 GET 一次 | 见上；migrate 先过滤再限次；ensureBlobLocal 先查记录、记录没了就删 blobState；getBlob 失败当 pending 不炸整次同步。 |
+
 ## 7. 数据模型与关键规则
 
 - `messages` 是**树**（`parentId` + `chats.currentLeafId`）：重新生成 = 挂第二个孩子，回溯 = 把 currentLeafId 指回历史节点。
@@ -319,6 +327,9 @@
   解密先试旧 fileKey 再试 v2；解不开的标 `broken` 跳过、`migrateBlobKeys` 用本地明文自愈。详见 §6 第四轮。
   校验在 `src/core/storage/image.ts`：magic byte 白名单（PNG/JPEG/GIF/WebP）、**拒绝 SVG**、
   原图 ≤10 MB、最长边 ≤4096，再压到封面 512 / 头像 128。
+- **「清空本机所有数据」= 真全清**（wipeAllLocalData）：删除所有账号的 IndexedDB、清 dsh-sync-*、
+  重置模块层状态并重载；被其它分页占用而删不掉时回 failed，**绝不能清 token 还报成功**。
+  云端数据不动；内置示范卡会在下次进入时自动重建（确认框要写清楚）。
 - **账号分库**：`db` 是可换的连接（`export let db` + `openDatabase/switchDatabase`）。未登录 `dsh-roleplay`，
   账号 X 用 `dsh-roleplay@x` —— 天然隔离。
 - 同步用的表（Dexie v2 只加表，v3 加 `mods`）：`syncOutbox` / `syncState` / `syncRev` / `syncConflicts` / `blobState`。
@@ -331,7 +342,7 @@
 
 ## 8. 测试基线
 
-改之前先跑一遍确认基线：**62 个测试文件 / 444 个用例全绿**，构建通过。
+改之前先跑一遍确认基线：**62 个测试文件 / 452 个用例全绿**，构建通过。
 
 关键回归测试：
 - 装配顺序 / 世界书触发 / 正则替换 / 白名单清洗（含 XSS）/ 卡片 zip 往返 / 酒馆卡互转 / 卡片自愈 / 草稿态不落库 / 布局约束。
@@ -346,6 +357,10 @@
 - 同步：加解密往返与 AAD 防搬移、恢复码 round-trip、outbox 三条写入路径、rev 递增与冲突副本、墓碑、
   **秘密字段不上云的金丝雀**、**拉取远端不得清掉本机的 apiKey / 明文**、**两边都有资料的取舍四步**、两装置端到端一致。
 - 图片：**伪装的 .png 被拒、SVG 被拒、超限被拒、导出可不含图**、**保存后 avatarAssetId 不丢**、
+  头像解析 path 全等/basename 兜底/回退封面。
+- 清空/换库：**全清后所有本程式 IndexedDB（含旧账号库）都不在**、dsh-sync-* 全清、模块状态重置；
+  删除被占用时回 failed 且不清 token；注册先写账号库再清匿名库；删账号同时移除 KDF 与账号库。
+- 额度/错误映射：429/limit → 限流文案；503 backend_quota → 等额度恢复；真 500 → 明说不是账号/资料问题。
   头像解析 path 全等/basename 兜底/回退封面。
 - 加密/同步：**blob v2 决定性命名**（同内容重复加密都能解）、**旧 fileKey 兼容**、**坏 blob 標 broken 不炸同步**、
   **替换重推后第三台仍解得开**（旧「换鑰匙」bug 的回归）、**migrateBlobKeys 自愈**、worker `replace=1` 覆写与配額、
@@ -362,7 +377,8 @@
 - 第三、四轮实测修复后的提交：见 `git log`（同步 500、摘要语义、unlocked、卡片图/头像、UI、blob v2 加密层）。
 - 线上：前端 https://ae382d0d.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
   Worker https://dsh-sync-api.s17179xty.workers.dev （version `f70cc890-f8d4-48f2-b517-3547508f1d5b`）。
-- 测试 62 档 / 444 例全绿；build 无错；两个浏览器探针在**本地与线上**都是 `pass: true`、console 零警告；
+- 测试 62 档 / 452 例全绿；build 无错；两个浏览器探针本地 pass:true；
+  另有账号端到端、多装置、清空本机数据三支浏览器探针（shots/，gitignore）本地/线上验证。
   账号/同步端到端探针 `shots/e2e-account.mjs`、多装置探针 `shots/e2e-multidevice.mjs` 本地与线上都全过。
 - 规格与计划：
   `docs/superpowers/specs/2026-10-15-context-summary-mod-images-design.md`、
@@ -383,6 +399,10 @@
 6. 探针脚本的 CDP 截图在 `shots/`（已 gitignore）；重跑同一 profile 会累积资料，断言都写成「存在」。
 7. **旧账号里已损坏的「使用者上传图」只能重传一次**：v2 自愈需要本地有明文；如果本机也清过数据，
    封面/头像就真的救不回来（平台内建互动页/世界书会由 `ensureSeedCard` 补回）。提醒使用者重新上传即可。
+8. **免费方案的 D1 查询上限**：一次 push 20 笔约 80+ 条语句，官方「免费 50 条/次调用」可能超；
+   若线上 push 开始 500，先把 worker/src/sync.ts 的 MAX_PUSH_BATCH 与 engine.ts 的 PUSH_BATCH 一起降到 8。
+   （本次线上实测 20 笔可跑通，说明账号在付费/限额更高的方案上，所以没降。）
+9. **changes 表永不裁剪**：新设备首同步请求数随历史线性增长（一次最多 20 页），长期要加按 (kind,id) 压缩。
 
 ### 修 bug 的标准流程
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { db } from '../../core/storage/db';
+import { db, DEFAULT_DB_NAME, switchDatabase } from '../../core/storage/db';
 import type { ModelCapability, ModelParams, ModelPresetRecord, ProviderRecord, RegexScriptRecord } from '../../core/storage/types';
 import { DEFAULT_CAPABILITY, DEFAULT_CONTEXT_LIMIT, DEFAULT_PARAMS, DEFAULT_SUMMARY_TRIGGER, SETTING_CONTEXT_LIMIT, SETTING_CONTEXT_MODE, SETTING_SUMMARY_TRIGGER, SUMMARY_MAX_PAIRS_PER_RUN, SUMMARY_TARGET_PERCENT, SUMMARY_TRIGGER_MAX, SUMMARY_TRIGGER_MIN, type ContextMode } from '../../core/storage/types';
 import {
@@ -8,7 +8,7 @@ import {
 } from '../../core/storage/providerRepo';
 import { defaultCapabilityFor } from '../../core/providers/registry';
 import { exportAll, importAll } from '../../core/storage/backup';
-import { clearLocalData, resetDefaultCards, resetSettings } from '../../core/storage/reset';
+import { localDataSummary, resetDefaultCards, resetSettings, wipeAllLocalData } from '../../core/storage/reset';
 import { downloadBytes, readFileBytes } from '../cards/fileUtils';
 import { newRegexScript } from '../cards/draft';
 import { resetSettingCache, useSetting, useSettingFlag } from '../../state/useSetting';
@@ -16,6 +16,8 @@ import { useData } from '../../state/useData';
 import { useSession } from '../../state/useSession';
 import { useNav } from '../../state/useNav';
 import AccountSection from './AccountSection';
+import { resetSyncMemory, useSync } from '../../state/useSync';
+import { useComposer } from '../../state/useComposer';
 import ModSection from './ModSection';
 
 const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#0072E3]';
@@ -114,12 +116,12 @@ export default function SettingsScreen() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void refresh().catch(() => undefined); // 清空本機資料／換庫瞬間連線可能正好被關掉，不要變成未處理的 rejection
   }, [refresh]);
 
   // 登入 / 登出 / 同步之後，這一頁也要跟著換一份資料
   useEffect(() => {
-    if (dataVersion > 0) void refresh();
+    if (dataVersion > 0) void refresh().catch(() => undefined); // 清空本機資料／換庫瞬間連線可能正好被關掉，不要變成未處理的 rejection
   }, [dataVersion, refresh]);
 
   const onSaveProvider = async () => {
@@ -295,14 +297,73 @@ export default function SettingsScreen() {
   };
 
   const onClearLocal = async () => {
-    const okToClear = window.confirm(
-      '清空本机所有数据？\n\n卡片、对话、消息、记忆库、设置都会删除（内置卡会在下次进入时自动重建）。\n云端那份不受影响，下次登录会重新同步回来。',
+    let summary: Awaited<ReturnType<typeof localDataSummary>> | null = null;
+    try {
+      summary = await localDataSummary();
+    } catch {
+      summary = null;
+    }
+    const lines = [
+      '清空本机所有数据？',
+      '',
+      '会删除这台装置上：',
+      '· 本程式「所有帐号」的本地数据库（含以前登录过的帐号）',
+      '· 登录状态（会退出登录，并撤销云端的这台装置 session）',
+      '· 界面设置与输入框草稿',
+    ];
+    if (summary) lines.push('', `当前这台：${summary.cards} 张卡 / ${summary.chats} 个对话 / ${summary.messages} 条讯息。`);
+    lines.push(
+      '',
+      '云端资料不受影响；之后重新登录会从云端同步回来。',
+      '内置示范卡会在下次进入「游玩」时自动重建（看到 1 张内置卡是正常的，不是没清干净）。',
     );
-    if (!okToClear) return;
-    await clearLocalData();
+    if (!window.confirm(lines.join('\n'))) return;
+
+    // 先盡量撤掉雲端 session，再清本機：否則「已登入的裝置」清單會一直留著這台
+    try {
+      if (useSync.getState().username) await useSync.getState().logout();
+    } catch {
+      // 離線也能清本機
+    }
+
+    let report: Awaited<ReturnType<typeof wipeAllLocalData>>;
+    try {
+      report = await wipeAllLocalData();
+    } catch (err) {
+      showToast('清空失败：' + (err instanceof Error ? err.message : String(err)));
+      return;
+    }
+    // 重新開一個乾淨的預設庫：清完到 reload 之間畫面還掛著，不能讓它拿著已刪除的連線
+    await switchDatabase(DEFAULT_DB_NAME);
+
+    // 記憶體裡的 DEK / 同步狀態 / 會話 / 草稿都要清——模組層狀態不會因為資料庫被刪就消失
+    resetSyncMemory();
     resetSettingCache();
+    useSession.getState().reset();
+    useComposer.setState({ texts: {} });
+    useSync.getState().refresh();
     useData.getState().bump('cleared');
-    showToast('本机数据已清空');
+
+    if (report.failed.length > 0) {
+      /*
+       * 有資料庫被其它分頁/視窗占用，deleteDatabase 被 blocked。
+       * **不能**報成功：登入狀態還在、舊資料也還在，使用者下次登入同一帳號又會看到它們。
+       */
+      showToast(`有 ${report.failed.length} 个本地数据库被其它页面占用，未能清除；请关闭其它标签页/窗口后再试一次`);
+      return;
+    }
+
+    showToast('本机数据已清空，正在重新载入…');
+    // 瀏覽器裡直接重新載入最乾淨；測試環境（jsdom 沒實作 navigation）只重畫
+    const env = (import.meta as unknown as { env?: { MODE?: string } }).env;
+    if (env?.MODE === 'test') return;
+    setTimeout(() => {
+      try {
+        window.location.reload();
+      } catch {
+        // 某些 WebView 不支援 reload：至少已經清乾淨、UI 已重畫
+      }
+    }, 200);
   };
 
   const supportedFields: { key: keyof ModelParams; label: string; supported: boolean; step: number; min: number; max: number }[] = [
@@ -742,7 +803,8 @@ export default function SettingsScreen() {
               清空本机所有数据
             </button>
             <div className="text-[11px] text-slate-400">
-              只清本机。云端那份要删，请到上面「账号」里用「删除账号与云端数据」。
+              所有账号的本机数据库、登录状态、设置与草稿都会删掉（云端不动），并会退出登录。
+              要删云端那份，请到上面「账号」里用「删除账号与云端数据」。
             </div>
           </div>
         </section>

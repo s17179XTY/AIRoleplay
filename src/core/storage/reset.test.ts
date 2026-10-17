@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { db } from './db';
-import { clearLocalData, resetDefaultCards, resetSettings, localDataSummary } from './reset';
+import { db, dbNameFor, DEFAULT_DB_NAME, switchDatabase } from './db';
+import {
+  clearLocalData, clearSyncStorage, isOurDatabaseName, listLocalDatabaseNames, localDataSummary,
+  resetDefaultCards, resetSettings, wipeAllLocalData,
+} from './reset';
 import { getActive, listProviders, savePreset, saveProvider, setActive } from './providerRepo';
 import { DEMO_CARD_ID } from './seed';
 import { ensureSeedCard, loadCardPackage, saveCardPackage, worldbookOf } from './cardRepo';
@@ -10,7 +13,10 @@ async function clearAll(): Promise<void> {
   for (const t of db.tables) await t.clear();
 }
 
-beforeEach(clearAll);
+beforeEach(async () => {
+  await switchDatabase(DEFAULT_DB_NAME);
+  await clearAll();
+});
 
 describe('恢复与重置', () => {
   it('resetSettings 清掉全局配置与一般设置，但保留服务商、模型配置与「使用中」选择', async () => {
@@ -81,5 +87,79 @@ describe('恢复与重置', () => {
     for (const table of db.tables) {
       expect(await table.count(), table.name + ' 应该被清空').toBe(0);
     }
+  });
+
+  it('clearSyncStorage 只清本程式的登入鍵，不碰別的網站資料', () => {
+    localStorage.setItem('dsh-sync-tokens', '{"accessToken":"a","refreshToken":"b"}');
+    localStorage.setItem('dsh-sync-user', 'alice');
+    localStorage.setItem('dsh-sync-kdf:alice', '{}');
+    localStorage.setItem('some-other-site', 'keep-me');
+
+    const removed = clearSyncStorage();
+
+    expect(removed.sort()).toEqual(['dsh-sync-kdf:alice', 'dsh-sync-tokens', 'dsh-sync-user']);
+    expect(localStorage.getItem('dsh-sync-tokens')).toBeNull();
+    expect(localStorage.getItem('some-other-site')).toBe('keep-me');
+    localStorage.removeItem('some-other-site');
+  });
+
+  it('isOurDatabaseName 只認預設庫與帳號庫', () => {
+    expect(isOurDatabaseName(DEFAULT_DB_NAME)).toBe(true);
+    expect(isOurDatabaseName(dbNameFor('Alice'))).toBe(true);
+    expect(isOurDatabaseName('dsh-roleplay-other')).toBe(false);
+    expect(isOurDatabaseName('somewhere-else')).toBe(false);
+    expect(isOurDatabaseName(null)).toBe(false);
+  });
+
+  it('clearLocalData 可以清「不是目前 live binding」的另一個庫（換庫前/刪帳號後要用）', async () => {
+    const other = `dsh-roleplay@other-${Math.random().toString(36).slice(2)}`;
+    const db2 = await switchDatabase(other);
+    await db2.cards.put({
+      id: 'c-other', name: '別人的卡', author: '', version: '1', description: '', tags: [],
+      source: 'local', spec: 'dsh-card/1', createdAt: 1, updatedAt: 1,
+    });
+    expect(await db2.cards.count()).toBe(1);
+
+    await clearLocalData(db2);
+    expect(await db2.cards.count()).toBe(0);
+    await switchDatabase(DEFAULT_DB_NAME);
+  });
+
+  it('wipeAllLocalData：刪掉所有本程式 IndexedDB（含其它帳號庫）並清登入狀態', async () => {
+    // 目前（預設）庫有資料
+    await switchDatabase(DEFAULT_DB_NAME);
+    await ensureSeedCard();
+    expect(await db.cards.count()).toBeGreaterThan(0);
+
+    // 再造一個「舊帳號庫」
+    const oldName = `dsh-roleplay@old-${Math.random().toString(36).slice(2)}`;
+    const oldDb = await switchDatabase(oldName);
+    await oldDb.settings.put({ key: 'x', value: '1' });
+    await switchDatabase(DEFAULT_DB_NAME);
+
+    // 登入狀態
+    localStorage.setItem('dsh-sync-tokens', '{"accessToken":"a","refreshToken":"b"}');
+    localStorage.setItem('dsh-sync-user', 'alice');
+
+    const listed = await listLocalDatabaseNames();
+    expect(listed).toContain(DEFAULT_DB_NAME);
+    expect(listed).toContain(oldName);
+
+    const report = await wipeAllLocalData();
+    expect(report.failed).toEqual([]);
+    expect(report.databases).toContain(DEFAULT_DB_NAME);
+    expect(report.databases).toContain(oldName);
+    expect(report.storageKeys).toContain('dsh-sync-tokens');
+    expect(localStorage.getItem('dsh-sync-user')).toBeNull();
+
+    // 重新打開（會是全新的空庫）
+    const fresh = await switchDatabase(DEFAULT_DB_NAME);
+    expect(await fresh.cards.count()).toBe(0);
+    expect(await fresh.settings.count()).toBe(0);
+
+    // 舊帳號庫也真的沒了：重新開啟是空庫
+    const oldAgain = await switchDatabase(oldName);
+    expect(await oldAgain.settings.count()).toBe(0);
+    await switchDatabase(DEFAULT_DB_NAME);
   });
 });

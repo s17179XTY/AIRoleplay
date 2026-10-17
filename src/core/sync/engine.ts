@@ -225,7 +225,9 @@ export async function applyRemoteRecord(
     await ctx.db.blobState.put({
       blobId: record.blobRef,
       kind: kind === 'assetMeta' || kind === 'cardFile' ? kind : undefined,
-      state: 'remote',
+      // 本機已經上傳過的 blob 不能因為拉到自己推上去的信封就被降級成 remote：
+      // 那會讓每一輪同步都以為「還沒上傳」，再重傳一次（KV 寫入翻倍、還會讓額度更快用完）。
+      state: existing?.state === 'uploaded' ? 'uploaded' : 'remote',
       refId: record.id,
       size: record.size ?? 0,
       // 本地已有的 fileKey 優先保留：拉到的信封若沒帶（舊資料）也不能把能用的鑰匙弄丟

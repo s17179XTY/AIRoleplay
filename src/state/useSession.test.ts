@@ -264,6 +264,29 @@ describe('会话 store', () => {
     expect(useSession.getState().draft).toBe('吐到一半');
   });
 
+  it('reset()：換庫/清空資料後把會話狀態歸零（避免切回遊玩還顯示上一個帳號）', async () => {
+    await useSession.getState().init();
+    await useSession.getState().send('第一句');
+    expect(useSession.getState().messages.length).toBeGreaterThan(0);
+    expect(useSession.getState().ready).toBe(true);
+
+    useSession.getState().reset();
+
+    const s = useSession.getState();
+    expect(s.ready).toBe(false);
+    expect(s.cardId).toBeNull();
+    expect(s.card).toBeNull();
+    expect(s.chatId).toBeNull();
+    expect(s.messages).toHaveLength(0);
+    expect(s.memories).toHaveLength(0);
+    expect(s.draft).toBe('');
+
+    // 再 init() 會像第一次打開一樣重新種卡／建會話
+    await useSession.getState().init();
+    expect(useSession.getState().ready).toBe(true);
+    expect(useSession.getState().chatId).toBeTruthy();
+  });
+
   it('窗口外的交换会被压成摘要，注入时带「不是最新消息」前缀', async () => {
     const seen: string[][] = [];
     setAdapter({
