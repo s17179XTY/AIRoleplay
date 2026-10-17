@@ -375,8 +375,8 @@
 ### 现在的状态
 
 - 第三、四轮实测修复后的提交：见 `git log`（同步 500、摘要语义、unlocked、卡片图/头像、UI、blob v2 加密层）。
-- 线上：前端 https://ae382d0d.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
-  Worker https://dsh-sync-api.s17179xty.workers.dev （version `f70cc890-f8d4-48f2-b517-3547508f1d5b`）。
+- 线上：前端 https://34b88eab.air-roleplay.pages.dev （别名 `air-roleplay.pages.dev`）；
+  Worker https://dsh-sync-api.s17179xty.workers.dev （version `9f011096-82e0-4a5c-b46a-b1e107c776be`）。
 - 测试 62 档 / 452 例全绿；build 无错；两个浏览器探针本地 pass:true；
   另有账号端到端、多装置、清空本机数据三支浏览器探针（shots/，gitignore）本地/线上验证。
   账号/同步端到端探针 `shots/e2e-account.mjs`、多装置探针 `shots/e2e-multidevice.mjs` 本地与线上都全过。
